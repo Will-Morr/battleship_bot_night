@@ -20,6 +20,43 @@ Batching is the throughput lever: one request/reply per bot per round covering a
 games. A single whole-request deadline (default 250 ms) bounds processing + comms and
 prevents hangs.
 
+## Key mechanisms
+
+### DB writes never block the loop
+Latency is the top priority, so the event loop must never do synchronous SQLite I/O. The
+round loop only pushes finished records (games, moves) onto an in-memory queue — cheap.
+A **dedicated writer thread** (via `loop.run_in_executor`, one connection) drains the
+queue and commits in batched transactions. Analytics reads use a **separate WAL reader
+connection** run in `asyncio.to_thread`, so reads and writes never touch the loop or each
+other (WAL allows concurrent readers during a write). A DB flush can never eat into
+`deadline_ms`.
+
+### Pairing (per tourney)
+Constraints: each active bot gets ~`target` games, no same-player pairings, otherwise
+random. Modeled as a degree-constrained random matching with forbidden same-player edges:
+1. Build a slot multiset — each active bot repeated `target` times — and shuffle it.
+2. Pair adjacent slots. If a pair is same-player (or a bot with itself), swap one member
+   with a later slot from a different player; scan forward for the first valid swap.
+3. Slots with no valid partner left (the dominant-player tail) are dropped.
+
+Degenerate cases, handled explicitly and unit-tested:
+- **Odd slot count:** one leftover slot is dropped (that bot gets `target-1` this
+  tourney). `target` is a target, not a guarantee.
+- **One player owns > half the slots:** their excess slots cannot be legally paired, so
+  those get dropped — that player's bots play fewer games. Unavoidable given the rule.
+- **Late-joining bot:** pairing is independent per tourney over the currently-active set,
+  so a late joiner simply gets `target` games from its first tourney on. Lifetime totals
+  differ, but rankings use rates/means, so uneven totals only change noise, not fairness.
+
+Repeat pairings across a tourney (playing the same opponent more than once) are allowed
+and expected. Duplicate exact pairings are not deduplicated.
+
+### Tourney brevity & restart tradeoff
+Because all games in a tourney run concurrently and rounds advance at bot speed, a full
+tourney is typically seconds. This is what makes the "restart forfeits your in-flight
+games" tradeoff cheap (see `DATA_CONTRACTS.md` §3, Session restart). `target` games/bot
+is the main knob organizers use to keep tourneys short.
+
 ## Repository layout
 
 ```
@@ -57,8 +94,9 @@ requirements.txt  README.md
 2. **Bots + local match + test harness** — two example bots, `local_match` (synchronous
    game between two in-process bots), `test/test_bot.py` (bot vs both examples, prints
    win-rate / solver / layout summary). Gives an end-to-end game loop with zero infra.
-3. **DB** — `db.py`: schema, WAL, batched inserts, `/sync` query helpers, snapshot for
-   `/db`. Unit-tested round-trip + incremental sync.
+3. **DB** — `db.py`: schema, WAL, off-loop writer thread + queue, batched inserts,
+   `/sync` query helpers (seq cursors), separate reader connection, snapshot for `/db`.
+   Unit-tested round-trip + incremental sync.
 4. **Server + tourney engine** — `tourney.py` (pairing, round loop reusing `game.py`),
    `server.py` (ROUTER, registration + session/uuid mgmt, batched dispatch, whole-request
    deadline, missed-window forfeit + blackout disconnect, DB writes, scoring hooks).

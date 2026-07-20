@@ -102,6 +102,9 @@ class Bot:
   On round 1 both `*_last` are `null`. `opponent_last` describes the opponent's
   previous shot **against this bot's board** (sent per the synchronous rules).
   `opponent_finished` becomes true once the opponent has solved this bot's board.
+  `opponent_last` is `null` on any round where the opponent did not shoot last round
+  (round 1, or any round after it finished or forfeited); `opponent_finished`
+  distinguishes "hasn't shot yet" from "done".
 
 A minimal functional form (module-level `place_ships(config)` / `make_move(view, mem)`)
 is also accepted by the runner, but `class Bot` is canonical.
@@ -185,6 +188,17 @@ At the deadline, the round is resolved from whatever `move_reply` arrived:
   default 1) to ride out a transient blip; ZMTP socket heartbeat is the backstop.
 
 `compute_ms` is recorded but never gates anything — the deadline is authoritative.
+
+### Session restart & re-registration
+A restart always means a new session/uuid (per spec). Re-registering a logical bot
+`(player, name)` that already has a live session **immediately retires the old session**:
+its still-active games forfeit at once rather than hanging opponents on repeated
+deadlines, and the new session joins from the next tourney. In-flight games of the old
+session are lost — an accepted tradeoff, kept cheap because **tourneys are short**: all
+games run concurrently and rounds advance at bot speed (a few ms on a LAN), so a tourney
+is typically seconds. A grace-window "resume my in-flight games" path is intentionally
+out of scope for v1 — a restarted process has no memory of those games, so resuming
+would require a full-history resync that short tourneys make unnecessary.
 
 ---
 
@@ -304,8 +318,10 @@ many millions of moves needs trimming. Kept as readable TEXT by default.
 ## 6. Scoring & game-end semantics
 
 Three competitions, all derivable from `games`:
-- **Win rate** = wins / games. A win = solving in strictly fewer rounds than the
-  opponent; equal rounds = **tie** (counts 0.5 in win rate). Forfeit = loss.
+- **Win rate** = wins / games (ties count 0.5). The winner is the side that solved in
+  strictly fewer rounds. Equal solving round = **tie** (0.5 each). A `finished` side
+  beats a `forfeited` one. **Both forfeited / neither solved = no winner and a loss for
+  both** (0 each) — a tie is only mutual success on the same round, never mutual failure.
 - **Solver** = mean `solved_round` over solved games (lower better); DNFs reported
   separately, excluded from the mean.
 - **Layout** = mean opponent `solved_round` against this bot (higher better); opponent
@@ -313,7 +329,13 @@ Three competitions, all derivable from `games`:
 - **Combined** (single projector rank) = configurable; default is the mean of the
   three per-competition percentile ranks. The three boards remain primary.
 
-**Illegal move / timeout / drop (game-end):** the offending player takes an instant
-loss (win rate) and a DNF (solver). **The game continues** so the opponent can finish
-solving — preserving the opponent's valid solver score and the offender's layout
-score. If both sides are out, the game ends. `end_reason` records the cause.
+**Game termination:** each side is `solving`, `finished` (solved the opponent), or
+`forfeited`. A side needs a move only while `solving`. **The game ends the round no
+side is still `solving`** — every side is finished or forfeited. This covers all cases:
+both finish, one finishes then the other forfeits, one forfeits then the other finishes,
+or both forfeit.
+
+**Forfeit (illegal move / missed window / timeout):** the offender is set `forfeited`
+for that game — instant win-rate loss and solver DNF — but the game keeps running so a
+still-`solving` opponent can finish, preserving the opponent's solver score and the
+offender's layout score. `end_reason` records the cause.
