@@ -116,6 +116,9 @@ is also accepted by the runner, but `class Bot` is canonical.
   identity frames are handled by ZMQ and never appear in the JSON.
 - **Batching is the throughput core:** one request per bot per round carries *all*
   that bot's pending games; one reply carries all its moves.
+- `game_id` on the wire is a compact **per-tourney integer handle** (JSON keys are its
+  string form), not the persistent `games.uuid`; the server maps between them. Bots
+  analyze finished data via the synced DB by `bot_uuid`, so they never need the uuid live.
 
 ### Client -> Server
 ```json
@@ -138,7 +141,7 @@ is also accepted by the runner, but `class Bot` is canonical.
 
 ### Server -> Client
 ```json
-{"type": "registered", "uuid": "<session-uuid>", "bot_id": 7, "config": {...}}
+{"type": "registered", "uuid": "<session-uuid>", "bot_uuid": "<logical-bot-uuid>", "config": {...}}
 
 {"type": "tourney_start", "tourney_id": 4, "your_games": [101, 102]}
 
@@ -187,78 +190,90 @@ At the deadline, the round is resolved from whatever `move_reply` arrived:
 
 ## 4. Database schema (SQLite, WAL mode)
 
-Append-only where possible; autoincrement ids drive incremental sync. Everything is
-kept forever — every layout and every move persists.
+Everything is kept forever — every layout and every move persists. Two id columns per
+table: **`uuid`** (TEXT, globally unique) is what all joins/foreign keys use; **`seq`**
+(INTEGER PRIMARY KEY = rowid, monotonic because we never delete) is the cursor for
+incremental sync and ordering.
 
 ```sql
-players(
-  id INTEGER PRIMARY KEY,
-  name TEXT UNIQUE NOT NULL
+tourneys(
+  seq INTEGER PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,
+  started_at REAL NOT NULL,             -- start timestamp
+  ended_at REAL,                        -- stop timestamp (NULL while running)
+  status TEXT NOT NULL,                 -- 'running' | 'complete'
+  num_games INTEGER,
+  config_json TEXT NOT NULL
 );
 
-bots(                                  -- logical bot; stats accumulate here
-  id INTEGER PRIMARY KEY,
-  player_id INTEGER NOT NULL REFERENCES players(id),
+bots(                                   -- logical bot (player, name); stats accumulate here
+  seq INTEGER PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,            -- stable logical-bot id; games join on this
+  player TEXT NOT NULL,
   name TEXT NOT NULL,
-  created_at REAL NOT NULL,
-  UNIQUE(player_id, name)
+  first_tourney_uuid TEXT REFERENCES tourneys(uuid),
+  last_tourney_uuid  TEXT REFERENCES tourneys(uuid),
+  first_seen_at REAL NOT NULL,
+  last_seen_at  REAL NOT NULL,
+  metadata_json TEXT,                   -- optional, free-form
+  UNIQUE(player, name)
 );
 
-bot_sessions(                          -- one per register/reconnect; holds code (private)
-  uuid TEXT PRIMARY KEY,               -- new each reconnect
-  bot_id INTEGER NOT NULL REFERENCES bots(id),
-  code TEXT NOT NULL,                  -- full source, saved forever, never public
+bot_sessions(                           -- one per register/reconnect; holds code (private)
+  seq INTEGER PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,            -- session uuid, new each reconnect
+  bot_uuid TEXT NOT NULL REFERENCES bots(uuid),
+  code TEXT NOT NULL,                   -- full source, saved forever, never public
   code_filename TEXT,
-  code_hash TEXT NOT NULL,             -- sha256, version identity
+  code_hash TEXT NOT NULL,              -- sha256, version identity
   runner_version TEXT,
   registered_at REAL NOT NULL,
   disconnected_at REAL
 );
 
-tourneys(
-  id INTEGER PRIMARY KEY,
-  started_at REAL NOT NULL,
-  ended_at REAL,
-  status TEXT NOT NULL,                -- 'running' | 'complete'
-  num_games INTEGER,
-  config_json TEXT NOT NULL
-);
-
-games(                                 -- denormalized results table (fast parsing)
-  id INTEGER PRIMARY KEY,
-  tourney_id INTEGER NOT NULL REFERENCES tourneys(id),
-  a_session TEXT NOT NULL REFERENCES bot_sessions(uuid),
-  b_session TEXT NOT NULL REFERENCES bot_sessions(uuid),
-  a_bot_id INTEGER NOT NULL,           -- denorm for group-by
-  b_bot_id INTEGER NOT NULL,
-  a_layout_json TEXT NOT NULL,         -- full layout, forever
+games(                                  -- denormalized results table (fast parsing)
+  seq INTEGER PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,
+  tourney_uuid TEXT NOT NULL REFERENCES tourneys(uuid),
+  a_bot_uuid TEXT NOT NULL REFERENCES bots(uuid),        -- for stats joins
+  b_bot_uuid TEXT NOT NULL REFERENCES bots(uuid),
+  a_session_uuid TEXT NOT NULL REFERENCES bot_sessions(uuid),  -- which code played
+  b_session_uuid TEXT NOT NULL REFERENCES bot_sessions(uuid),
+  a_layout_json TEXT NOT NULL,          -- full layout, forever
   b_layout_json TEXT NOT NULL,
-  a_solved_round INTEGER,              -- A's solver metric (turns A took); NULL = DNF
-  b_solved_round INTEGER,              -- B's solver metric
-  winner TEXT,                         -- 'a' | 'b' | 'tie' | NULL
-  a_outcome TEXT,                      -- 'win'|'loss'|'tie'|'forfeit'
+  a_solved_round INTEGER,               -- A's solver metric (turns A took); NULL = DNF
+  b_solved_round INTEGER,               -- B's solver metric
+  winner TEXT,                          -- 'a' | 'b' | 'tie' | NULL
+  a_outcome TEXT,                       -- 'win'|'loss'|'tie'|'forfeit'
   b_outcome TEXT,
-  end_reason TEXT,                     -- 'complete'|'a_illegal'|'b_illegal'|'a_timeout'|'b_timeout'|'a_drop'|'b_drop'|'both_forfeit'
+  end_reason TEXT,                      -- 'complete'|'a_illegal'|'b_illegal'|'a_timeout'|'b_timeout'|'a_drop'|'b_drop'|'both_forfeit'
   total_rounds INTEGER,
-  started_at REAL,
-  ended_at REAL
+  started_at REAL NOT NULL,             -- start timestamp
+  ended_at REAL,                        -- stop timestamp
+  a_resp_min_ms REAL, a_resp_max_ms REAL, a_resp_avg_ms REAL,  -- A's per-move response times
+  b_resp_min_ms REAL, b_resp_max_ms REAL, b_resp_avg_ms REAL   -- B's
 );
 
-moves(                                 -- per-move rows; the big table
-  id INTEGER PRIMARY KEY,
-  game_id INTEGER NOT NULL REFERENCES games(id),
-  round INTEGER NOT NULL,              -- 1-indexed shot number
-  side TEXT NOT NULL,                  -- 'a' | 'b' (shooter)
+moves(                                  -- per-move rows; the big table
+  seq INTEGER PRIMARY KEY,
+  uuid TEXT UNIQUE NOT NULL,            -- present per spec; join key is game_uuid
+  game_uuid TEXT NOT NULL REFERENCES games(uuid),
+  round INTEGER NOT NULL,               -- 1-indexed shot number
+  side TEXT NOT NULL,                   -- 'a' | 'b' (shooter)
   row INTEGER NOT NULL,
   col INTEGER NOT NULL,
-  result TEXT NOT NULL,                -- 'hit'|'miss'|'sunk'
-  sunk_ship TEXT,                      -- ship name iff result='sunk'
-  compute_ms REAL
+  result TEXT NOT NULL,                 -- 'hit'|'miss'|'sunk'
+  sunk_ship TEXT,                       -- ship name iff result='sunk'
+  response_ms REAL                      -- bot-reported response time for this move
 );
 ```
 
-Indexes: `moves(game_id, round)`, `games(tourney_id)`, `games(a_bot_id)`,
-`games(b_bot_id)`, `bot_sessions(bot_id)`.
+Indexes: `moves(game_uuid, round)`, `games(tourney_uuid)`, `games(a_bot_uuid)`,
+`games(b_bot_uuid)`, `bot_sessions(bot_uuid)`.
+
+Note: `moves.uuid` is identity-only (nothing joins to it) and is the heaviest column at
+scale — the obvious lever (drop it, or store all uuids as 16-byte BLOBs) if a dataset of
+many millions of moves needs trimming. Kept as readable TEXT by default.
 
 **Derived metrics (not stored, computed in `scoring.py`):**
 - A's *layout* score = `b_solved_round` (turns the opponent took to crack A). Higher
@@ -271,17 +286,17 @@ Indexes: `moves(game_id, round)`, `games(tourney_id)`, `games(a_bot_id)`,
 
 - `GET /`            -> stats site (static).
 - `GET /projector`   -> full-screen live rankings board (static).
-- `GET /api/rankings` -> leaderboards: per bot `{bot_id, player, name, games, wins,
+- `GET /api/rankings` -> leaderboards: per bot `{bot_uuid, player, name, games, wins,
   win_rate, avg_solver, avg_layout, combined, active}`.
-- `GET /api/bots`, `GET /api/bot/{id}` -> bot list; detail with solver/layout
+- `GET /api/bots`, `GET /api/bot/{bot_uuid}` -> bot list; detail with solver/layout
   histograms and per-opponent breakdown.
 - `GET /api/pairings` -> pairwise winrate/avg-score matrix over active bots.
 - `GET /api/tourneys` -> tourney list + status.
 - `GET /events`      -> SSE: `tourney_start`, `game_complete`, `ranking_update`,
   `tourney_end` for the live projector.
-- `GET /sync?since_session=&since_game=&since_move=` -> incremental JSON of new rows
-  (append-only tables by id cursor; small tables re-sent whole). The sync client keeps
-  a local SQLite mirror with this identical schema.
+- `GET /sync?tourneys=&bots=&bot_sessions=&games=&moves=` -> incremental JSON of rows
+  with `seq` greater than each per-table cursor. The sync client keeps a local SQLite
+  mirror with this identical schema and advances cursors by max `seq` per table.
 - `GET /db` -> one-shot download of a consistent snapshot (`VACUUM INTO`) of the DB.
 
 ---
