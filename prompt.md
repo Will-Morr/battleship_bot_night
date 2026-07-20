@@ -1,0 +1,23 @@
+This repo is for a bot game night event for the game battleship. The event is a real-time continuous tournament, where players write bots in real time to play against each other. When a player is ready to deploy a bot, they run a command in a terminal and the bot automatically registers and plays in the next tourney. A “bot” is an AI model not an instance, a single bot should be able to play multiple games in parallel. There is a central server that is running the core game logic and communicating with the bots.
+
+The event is structured as a series of batches of games, called tourneys. A tourney first calculates a set game pairings, with a target number of games per bot. Bots from the same player cannot play one another but should otherwise be random. Once the games have been set, the game loop begins with bots having moves requested when it is their turn and logic being processed. Any illegal move is processed as an instant loss, as well as taking more than the max processing time (250 mS is standard). Guessing the same tile twice is an illegal move so games have to move towards an ending. A tourney runs until all games are complete, at which point it is recorded and the scores update. Implement the standard rules of battleship, where the data you receive after a shot is simply “hit”, “miss”, or the name of the vessel sunk. 
+
+Minimizing latency and maximizing throughput is a priority. Battleship is a high noise game so we want to play a ton of games in order to show real statistically significant differences in play. 
+
+In a slight deviation from normal rules, we are going to play battleship synchronously. The first round all bots submit their layouts to the server. All following rounds simply send players both their previous moves results and their opponent’s previous move + results and then request a new move. This way players move at the same time and games go faster. 
+
+Also unlike normal battleship, the games continue until both players have finished the maps. This functionally breaks the event out into three separate competitions: win rate, layout, and solver. Win rate is binary and thus very high noise, but layout and solver are scored by the number of turns it took for you or your opponent to solve which is higher resolution data. 
+
+All game data is available as a database. Immediately after a tourney is complete, players should be able to download and analyze the data. We most likely want to have it configured so players can keep an automatically synced db of all game data to not need to worry about query load. The db should be lightweight and easy to parse, but still equipped to handle hundreds of thousands of games of data at a reasonable pace. 
+
+Real time data analytics is a core part of  this system. I want to have a projector connected that displays the real time rankings of each bot. There should also be a lightweight webserver with a site that shows more in depth stats on each bots, such as score distributions and relative winrates/scores for each pairing of active bots. 
+
+All code will most likely be in python (except for the website), as it is readable and editable. 
+
+There should be a pair of very simple default bots that both place randomly, with one guessing random tiles and one guessing every tile in order. Bots should be written in one file, with a function or class that is the core bot logic and a dictionary that specifies the player and bot name. Players can run bots by running a script that handles all of the communication and overhead and includes the bot logic file path as a CL arg. There should be alternative methods to run bots, with options to run a single thread and multi-threaded versions. Most players will be on linux or wsl, but have at least on version that you expect to work on mac. The script should automatically upload the full bot code to the server, which should be saved for future analysis but not made public.   Finally, there needs to be a quick and easy test script that runs a given bot in a number of games against the two example bots to test before running a bot live. Include a skill to wrap this test. 
+
+The server should identify bots by uuid and assign a new uuid each time a bot reconnects. The server also needs to be robust to bots dropping out without nicely shutting down. 
+
+Games will run on the local network. This tournament is a high-trust environment, do not spend significant resources defending against non-trivial exploits. The main goals are speed and reliability. 
+
+Keep all comments readable and reasonably sized. Keep all code as simple and readable as possible.

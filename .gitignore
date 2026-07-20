@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Databases / game data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+game_data/
+
+# Node / website
+node_modules/
+.next/
+out/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
