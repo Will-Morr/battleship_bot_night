@@ -5,7 +5,8 @@ A deterministic baseline — it always takes rows*cols shots minus a bit to clea
 
 from battleship.bot_api import Bot, all_cells, random_layout
 
-BOT = {"player": "house", "bot": "ordered"}
+# Distinct player from random_bot (see that file) so the two examples can play.
+BOT = {"player": "example-b", "bot": "ordered"}
 
 
 class Bot(Bot):

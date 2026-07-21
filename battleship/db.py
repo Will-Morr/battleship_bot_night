@@ -106,11 +106,13 @@ def new_uuid():
 
 
 def connect(path, readonly=False):
-    """Open a tuned connection. `readonly` opens the DB in read-only URI mode."""
+    """Open a tuned connection. Readers use `query_only` rather than URI `mode=ro`: a
+    strict read-only handle cannot attach the WAL shared-memory index across processes
+    and would then read a stale main file, so we open a normal handle and forbid writes."""
+    conn = sqlite3.connect(path, check_same_thread=False)
     if readonly:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+        conn.execute("PRAGMA query_only=ON")
     else:
-        conn = sqlite3.connect(path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
     conn.row_factory = sqlite3.Row

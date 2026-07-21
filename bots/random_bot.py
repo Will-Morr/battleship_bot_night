@@ -8,7 +8,9 @@ import random
 
 from battleship.bot_api import Bot, all_cells, random_layout
 
-BOT = {"player": "house", "bot": "random"}
+# Distinct player from ordered_bot so the two examples can be matched against each
+# other (same-player bots are never paired).
+BOT = {"player": "example-a", "bot": "random"}
 
 
 class Bot(Bot):
