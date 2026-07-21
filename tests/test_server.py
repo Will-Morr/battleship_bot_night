@@ -117,6 +117,22 @@ def test_server_end_to_end(tmp_path):
             async with http.get(f"http://127.0.0.1:{http_port}/db") as r:
                 blob = await r.read()
                 assert blob.startswith(b"SQLite format 3")
+            # analytics API
+            async with http.get(f"http://127.0.0.1:{http_port}/api/rankings") as r:
+                board = await r.json()
+                assert len(board) == 2
+                assert {b["player"] for b in board} == {"alice", "bob"}
+                assert all("combined" in b and "win_rate" in b for b in board)
+                first_bot = board[0]["bot_uuid"]
+            async with http.get(f"http://127.0.0.1:{http_port}/api/pairings") as r:
+                assert len(await r.json()) == 1        # one pair (alice vs bob)
+            async with http.get(f"http://127.0.0.1:{http_port}/api/bot/{first_bot}") as r:
+                detail = await r.json()
+                assert detail["games"] >= 3 and "solver_hist" in detail
+            # static pages render
+            for route in ("/", "/projector", "/static/app.js"):
+                async with http.get(f"http://127.0.0.1:{http_port}{route}") as r:
+                    assert r.status == 200
 
         stop.set()
         await asyncio.gather(*clients)

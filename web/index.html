@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Battleship — Stats</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="bar">
+    <strong>🚢 Battleship Stats</strong>
+    <span class="muted">live tournament analytics</span>
+    <div class="spacer"></div>
+    <a href="/projector">projector view →</a>
+  </header>
+  <div class="wrap">
+    <div class="card">
+      <h2>Rankings</h2>
+      <div class="muted">click a bot for its score distributions and head-to-head record</div>
+      <table id="rankings"></table>
+    </div>
+
+    <div class="card" id="detail" data-bot="">
+      <span class="muted">select a bot above to see details</span>
+    </div>
+
+    <div class="card">
+      <h2>Pairings</h2>
+      <div class="muted">win% of the row bot against the column bot</div>
+      <div style="overflow-x:auto"><table id="pairings"></table></div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>initStats();</script>
+</body>
+</html>

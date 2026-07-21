@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Battleship — Live Rankings</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="projector">
+  <div class="board">
+    <h1>🚢 Battleship Tournament</h1>
+    <div class="sub" id="sub">connecting…</div>
+    <table>
+      <thead>
+        <tr>
+          <th class="rank">#</th>
+          <th class="l">bot</th>
+          <th>games</th>
+          <th>win%</th>
+          <th>solver&darr;</th>
+          <th>layout&uarr;</th>
+          <th>combined</th>
+        </tr>
+      </thead>
+      <tbody id="board-body"></tbody>
+    </table>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>initProjector();</script>
+</body>
+</html>

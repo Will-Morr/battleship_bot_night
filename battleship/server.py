@@ -13,6 +13,7 @@ Concurrency model:
 import argparse
 import asyncio
 import hashlib
+import json
 import os
 import random
 import time
@@ -24,8 +25,11 @@ from aiohttp import web
 
 from . import config as cfg
 from . import protocol as p
+from . import scoring
 from .db import Database, connect, new_uuid
 from .tourney import TourneyEngine
+
+WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
 RUNNER_VERSION = "1"
 
@@ -101,7 +105,11 @@ class Server:
         self._tourney_wire_id = 0   # compact per-tourney id sent on the wire
         self._ping_window = 0.15
         self._max_ping_misses = 3
+        self._sse_clients = set()   # asyncio.Queue per connected SSE viewer
         self.running = False
+
+    def _active_bot_uuids(self):
+        return frozenset(s.bot_uuid for s in self.sessions.values())
 
     # -- write/read plumbing ----------------------------------------------------
 
@@ -272,6 +280,7 @@ class Server:
         for s in participants:
             await self.send(s.identity, p.msg(p.TOURNEY_START, tourney_id=wire_id))
 
+        self._broadcast({"type": "tourney_start", "tourney_id": wire_id})
         engine = TourneyEngine(tourney_uuid, [s.as_participant() for s in participants],
                                self.config, self.target, self.rng,
                                blackout_grace=cfg.BLACKOUT_GRACE)
@@ -288,20 +297,103 @@ class Server:
         for s in participants:
             if s.uuid in self.sessions:
                 await self.send(s.identity, p.msg(p.TOURNEY_END, tourney_id=wire_id))
+        self._broadcast({"type": "tourney_end", "tourney_id": wire_id,
+                         "games": engine.num_games})
 
     # -- HTTP -------------------------------------------------------------------
 
     def http_app(self):
         app = web.Application()
         app.add_routes([
+            web.get("/", self._h_index),
+            web.get("/projector", self._h_projector),
             web.get("/health", self._h_health),
             web.get("/sync", self._h_sync),
             web.get("/db", self._h_db),
+            web.get("/events", self._h_events),
+            web.get("/api/rankings", self._h_rankings),
+            web.get("/api/bots", self._h_bots),
+            web.get("/api/bot/{uuid}", self._h_bot),
+            web.get("/api/pairings", self._h_pairings),
+            web.get("/api/tourneys", self._h_tourneys),
         ])
+        if os.path.isdir(WEB_DIR):
+            app.router.add_static("/static/", WEB_DIR)
         return app
+
+    async def _read(self, fn):
+        """Run a read query on a throwaway read-only connection off the event loop."""
+        return await asyncio.to_thread(self._read_blocking, fn)
+
+    def _read_blocking(self, fn):
+        conn = connect(self.db.path, readonly=True)
+        try:
+            return fn(conn)
+        finally:
+            conn.close()
 
     async def _h_health(self, request):
         return web.json_response({"ok": True, "sessions": len(self.sessions)})
+
+    async def _h_index(self, request):
+        return web.FileResponse(os.path.join(WEB_DIR, "index.html"))
+
+    async def _h_projector(self, request):
+        return web.FileResponse(os.path.join(WEB_DIR, "projector.html"))
+
+    async def _h_rankings(self, request):
+        active = self._active_bot_uuids()
+        return web.json_response(await self._read(lambda c: scoring.rankings(c, active)))
+
+    async def _h_bots(self, request):
+        active = self._active_bot_uuids()
+        rows = await self._read(lambda c: [dict(r) for r in c.execute(
+            "SELECT uuid, player, name, first_tourney_uuid, last_tourney_uuid, "
+            "first_seen_at, last_seen_at FROM bots ORDER BY player, name")])
+        for r in rows:
+            r["active"] = r["uuid"] in active
+        return web.json_response(rows)
+
+    async def _h_bot(self, request):
+        uuid = request.match_info["uuid"]
+        return web.json_response(await self._read(lambda c: scoring.bot_detail(c, uuid)))
+
+    async def _h_pairings(self, request):
+        return web.json_response(await self._read(scoring.pairings))
+
+    async def _h_tourneys(self, request):
+        rows = await self._read(lambda c: [dict(r) for r in c.execute(
+            "SELECT uuid, started_at, ended_at, status, num_games FROM tourneys "
+            "ORDER BY seq DESC LIMIT 100")])
+        return web.json_response(rows)
+
+    async def _h_events(self, request):
+        resp = web.StreamResponse(headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        })
+        await resp.prepare(request)
+        queue = asyncio.Queue()
+        self._sse_clients.add(queue)
+        try:
+            await resp.write(b": connected\n\n")
+            while True:
+                data = await queue.get()
+                await resp.write(f"data: {data}\n\n".encode())
+        except (asyncio.CancelledError, ConnectionError):
+            pass
+        finally:
+            self._sse_clients.discard(queue)
+        return resp
+
+    def _broadcast(self, payload):
+        data = json.dumps(payload)
+        for queue in list(self._sse_clients):
+            try:
+                queue.put_nowait(data)
+            except asyncio.QueueFull:
+                pass
 
     async def _h_sync(self, request):
         games = int(request.query.get("games", 0))
