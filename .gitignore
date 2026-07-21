@@ -20,6 +20,7 @@ env/
 *.sqlite3
 data/
 game_data/
+snapshots/
 
 # Node / website
 node_modules/

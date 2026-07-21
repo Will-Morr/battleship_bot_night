@@ -1,0 +1,7 @@
+# Server needs both; a bot runner needs only pyzmq. Bots and the local test
+# harness need nothing beyond the standard library.
+pyzmq>=25
+aiohttp>=3.9
+
+# For running the test suite (dev only):
+#   pytest>=8
