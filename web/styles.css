@@ -58,6 +58,40 @@ tr.inactive td { color: var(--muted); }
 .hist { display: flex; align-items: flex-end; gap: 3px; height: 120px; }
 .hist .col { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; }
 .hist .col.layout { background: var(--warn); }
+.hist .col.b { background: #c78bff; }
+
+/* tabs */
+.tabs { display: flex; gap: .25rem; margin-left: 1rem; }
+.tabs button {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  padding: .35rem .8rem; border-radius: .5rem; cursor: pointer; font: inherit; font-weight: 600;
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button.active { color: var(--ink); background: var(--panel-2); border-color: var(--line); }
+
+/* selects */
+.sel {
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+  border-radius: .5rem; padding: .35rem .6rem; font: inherit; max-width: 16rem;
+}
+
+/* stat tiles */
+.scores { display: flex; gap: 1rem; margin: .75rem 0 1rem; flex-wrap: wrap; }
+.stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: .6rem;
+  padding: .6rem 1rem; min-width: 6rem; }
+.stat .k { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; }
+.stat .v { font-size: 1.6rem; font-weight: 700; }
+
+/* significance badges + verdict */
+.badge { font-size: .78rem; font-weight: 600; padding: .1rem .5rem; border-radius: .5rem; white-space: nowrap; }
+.badge.sig { background: rgba(52,211,153,.18); color: var(--good); }
+.badge.nsig { background: var(--bar); color: var(--muted); }
+.verdict { font-size: 1.25rem; font-weight: 700; margin: .25rem 0 1rem; padding: .5rem .8rem;
+  border-radius: .6rem; border-left: 4px solid var(--line); background: var(--panel-2); }
+.verdict.ok { border-left-color: var(--good); }
+.verdict.tie { border-left-color: var(--muted); color: var(--muted); }
+table.cmp td { border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.cmp td.l { color: var(--muted); text-transform: uppercase; font-size: .78rem; letter-spacing: .03em; }
 .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: .72rem; margin-top: .25rem; }
 
 /* Projector board */

@@ -77,3 +77,18 @@ def test_bot_detail(tmp_path):
     assert detail["solver_hist"] == {30: 1, 50: 1}
     opp_ids = {o["bot_uuid"] for o in detail["opponents"]}
     assert opp_ids == {ids["p2"], ids["p3"]}
+    # enriched summary
+    assert detail["win_rate"] == 1.0            # p1 won both its games
+    assert detail["solver_avg"] == 40.0         # (30 + 50) / 2
+
+
+def test_head_to_head(tmp_path):
+    d, ids = seeded(tmp_path)
+    h = scoring.head_to_head(d.conn, ids["p1"], ids["p2"])
+    assert h["games"] == 1
+    assert h["a_win_rate"] == 1.0               # p1 beat p2
+    assert h["solve_delta"] == 10.0             # b_solve(40) - a_solve(30): p1 faster
+    assert h["solve_leader"] == h["a"]["name"]
+    assert "win_rate_sig" in h and "solve_delta_sig" in h
+    # a bot has no games against itself
+    assert scoring.head_to_head(d.conn, ids["p1"], ids["p1"])["games"] == 0

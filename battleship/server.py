@@ -314,6 +314,7 @@ class Server:
             web.get("/api/rankings", self._h_rankings),
             web.get("/api/bots", self._h_bots),
             web.get("/api/bot/{uuid}", self._h_bot),
+            web.get("/api/compare", self._h_compare),
             web.get("/api/pairings", self._h_pairings),
             web.get("/api/tourneys", self._h_tourneys),
         ])
@@ -357,6 +358,12 @@ class Server:
     async def _h_bot(self, request):
         uuid = request.match_info["uuid"]
         return web.json_response(await self._read(lambda c: scoring.bot_detail(c, uuid)))
+
+    async def _h_compare(self, request):
+        a, b = request.query.get("a"), request.query.get("b")
+        if not a or not b:
+            return web.json_response({"error": "need ?a= and ?b= bot uuids"}, status=400)
+        return web.json_response(await self._read(lambda c: scoring.head_to_head(c, a, b)))
 
     async def _h_pairings(self, request):
         return web.json_response(await self._read(scoring.pairings))

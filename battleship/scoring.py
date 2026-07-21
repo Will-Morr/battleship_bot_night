@@ -5,6 +5,9 @@ Each game contributes two perspectives (side a and side b); the UNION below flat
 game into one row per participating bot so everything is a simple GROUP BY.
 """
 
+import math
+import statistics
+
 # One row per (bot, game) with that bot's perspective of the result.
 _PERSPECTIVES = """
 SELECT a_bot_uuid AS bot, b_bot_uuid AS opp,
@@ -115,14 +118,79 @@ def bot_detail(conn, bot_uuid):
         })
     opponents.sort(key=lambda x: (-x["games"], x["player"], x["name"]))
 
+    scores = [1.0 if r["win"] else (0.5 if r["tie"] else 0.0) for r in rows]
+    solver_vals = [r["solver"] for r in rows if r["solver"] is not None]
+    layout_vals = [r["opp_solver"] for r in rows if r["opp_solver"] is not None]
     return {
         "bot_uuid": bot_uuid,
         "player": me.get("player", "?"),
         "name": me.get("name", "?"),
         "games": len(rows),
+        "wins": sum(1 for r in rows if r["win"]),
+        "ties": sum(1 for r in rows if r["tie"]),
+        "win_rate": statistics.mean(scores) if scores else 0.0,
+        "solver_avg": statistics.mean(solver_vals) if solver_vals else None,
+        "layout_avg": statistics.mean(layout_vals) if layout_vals else None,
         "solver_hist": _histogram([r["solver"] for r in rows]),
         "layout_hist": _histogram([r["opp_solver"] for r in rows]),
         "opponents": opponents,
+    }
+
+
+def _sig(z):
+    """Two-sided p-value for a standard-normal z, and whether |z| clears 1.96 (p<0.05)."""
+    return math.erfc(abs(z) / math.sqrt(2)), abs(z) > 1.96
+
+
+def head_to_head(conn, a_uuid, b_uuid):
+    """Direct comparison of two bots over only their shared games, with significance on
+    both win rate (vs 50%) and mean solve time (delta > 0 means A is the faster solver)."""
+    meta = {r["uuid"]: dict(r) for r in conn.execute("SELECT uuid, player, name FROM bots")}
+
+    def side(uuid):
+        m = meta.get(uuid, {})
+        return {"bot_uuid": uuid, "name": m.get("name", "?"), "player": m.get("player", "?")}
+
+    a, b = side(a_uuid), side(b_uuid)
+    rows = conn.execute(
+        f"SELECT * FROM ({_PERSPECTIVES}) WHERE bot=? AND opp=?", (a_uuid, b_uuid)).fetchall()
+    n = len(rows)
+    if n == 0:
+        return {"a": a, "b": b, "games": 0}
+
+    scores = [1.0 if r["win"] else (0.5 if r["tie"] else 0.0) for r in rows]
+    a_solve = [r["solver"] for r in rows if r["solver"] is not None]
+    b_solve = [r["opp_solver"] for r in rows if r["opp_solver"] is not None]
+
+    win_rate = statistics.mean(scores)
+    se_wr = statistics.pstdev(scores) / math.sqrt(n) if n > 1 else 0.0
+    z_wr = (win_rate - 0.5) / se_wr if se_wr else 0.0
+    p_wr, sig_wr = _sig(z_wr)
+
+    ma = statistics.mean(a_solve) if a_solve else float("nan")
+    mb = statistics.mean(b_solve) if b_solve else float("nan")
+    delta = mb - ma  # A's turn advantage; >0 => A solves faster
+    se_d = (math.sqrt(statistics.pvariance(a_solve) / len(a_solve)
+                      + statistics.pvariance(b_solve) / len(b_solve))
+            if len(a_solve) > 1 and len(b_solve) > 1 else 0.0)
+    z_d = delta / se_d if se_d else 0.0
+    p_d, sig_d = _sig(z_d)
+
+    a.update({"solve_mean": ma, "solve_sd": statistics.pstdev(a_solve) if len(a_solve) > 1 else 0.0,
+              "solve_hist": _histogram(a_solve)})
+    b.update({"solve_mean": mb, "solve_sd": statistics.pstdev(b_solve) if len(b_solve) > 1 else 0.0,
+              "solve_hist": _histogram(b_solve)})
+    return {
+        "a": a, "b": b, "games": n,
+        "a_wins": sum(1 for r in rows if r["win"]),
+        "b_wins": sum(1 for r in rows if not r["win"] and not r["tie"]),
+        "ties": sum(1 for r in rows if r["tie"]),
+        "a_win_rate": win_rate,
+        "win_rate_z": z_wr, "win_rate_p": p_wr, "win_rate_sig": sig_wr,
+        "solve_delta": delta, "solve_delta_se": se_d, "solve_delta_z": z_d,
+        "solve_delta_p": p_d, "solve_delta_sig": sig_d,
+        "win_leader": a["name"] if win_rate > 0.5 else b["name"],
+        "solve_leader": a["name"] if delta > 0 else b["name"],
     }
 
 

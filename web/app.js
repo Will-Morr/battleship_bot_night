@@ -62,19 +62,55 @@ function initProjector() {
   subscribe(refresh);
 }
 
-// -- stats page --------------------------------------------------------------
+// -- stats page (tabbed: leaderboard / bot / compare) ------------------------
+
+let BOTS = [];
+let currentTab = "leaderboard";
 
 function initStats() {
-  let bots = [];
-  async function refresh() {
-    bots = await getJSON("/api/rankings");
-    renderRankings(bots);
-    renderPairings(await getJSON("/api/pairings"), bots);
-    const open = el("detail").dataset.bot;
-    if (open) showBot(open);
-  }
-  window.showBot = showBot;
+  document.querySelectorAll(".tabs button").forEach((btn) => {
+    btn.onclick = () => setTab(btn.dataset.tab);
+  });
+  window.openBot = openBot;
+  el("botSelect").onchange = (e) => showBot(e.target.value);
+  el("cmpA").onchange = () => renderCompare(el("cmpA").value, el("cmpB").value);
+  el("cmpB").onchange = () => renderCompare(el("cmpA").value, el("cmpB").value);
   subscribe(refresh);
+}
+
+async function refresh() {
+  BOTS = await getJSON("/api/rankings");
+  renderRankings(BOTS);
+  renderPairings(await getJSON("/api/pairings"), BOTS);
+  if (BOTS.length) {
+    fillSelect(el("botSelect"), BOTS[0].bot_uuid);
+    fillSelect(el("cmpA"), BOTS[0].bot_uuid);
+    fillSelect(el("cmpB"), (BOTS[1] || BOTS[0]).bot_uuid);
+  }
+  if (currentTab === "bot" && el("botSelect").value) showBot(el("botSelect").value);
+  if (currentTab === "compare") renderCompare(el("cmpA").value, el("cmpB").value);
+}
+
+function fillSelect(sel, def) {
+  const cur = sel.value;
+  sel.innerHTML = BOTS.map((b) =>
+    `<option value="${b.bot_uuid}">${esc(b.name)} (${esc(b.player)})</option>`).join("");
+  sel.value = BOTS.some((b) => b.bot_uuid === cur) ? cur : def;
+}
+
+function setTab(name) {
+  currentTab = name;
+  document.querySelectorAll(".tabs button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === name));
+  ["leaderboard", "bot", "compare"].forEach((t) => { el("tab-" + t).hidden = t !== name; });
+  if (name === "bot" && el("botSelect").value) showBot(el("botSelect").value);
+  if (name === "compare") renderCompare(el("cmpA").value, el("cmpB").value);
+}
+
+function openBot(uuid) {
+  setTab("bot");
+  el("botSelect").value = uuid;
+  showBot(uuid);
 }
 
 function renderRankings(rows) {
@@ -82,7 +118,7 @@ function renderRankings(rows) {
     <thead><tr><th>#</th><th class="l">bot</th><th class="l">player</th><th>games</th>
       <th>win%</th><th>solver↓</th><th>layout↑</th><th>combined</th><th></th></tr></thead>
     <tbody>${rows.map((r) => `
-      <tr class="clickable ${r.active ? "" : "inactive"}" onclick="showBot('${r.bot_uuid}')">
+      <tr class="clickable ${r.active ? "" : "inactive"}" onclick="openBot('${r.bot_uuid}')">
         <td>${r.rank}</td><td class="l">${esc(r.name)}</td><td class="l">${esc(r.player)}</td>
         <td>${r.games}</td><td>${pct(r.win_rate)}</td><td>${one(r.solver_avg)}</td>
         <td>${one(r.layout_avg)}</td>
@@ -95,11 +131,17 @@ async function showBot(uuid) {
   const d = await getJSON("/api/bot/" + uuid);
   const box = el("detail");
   box.dataset.bot = uuid;
-  const opps = d.opponents.map((o) => `<tr><td class="l">${esc(o.name)} <span class="muted">${esc(o.player)}</span></td>
+  const opps = d.opponents.map((o) => `<tr class="clickable" onclick="openBot('${o.bot_uuid}')">
+    <td class="l">${esc(o.name)} <span class="muted">${esc(o.player)}</span></td>
     <td>${o.games}</td><td>${pct(o.win_rate)}</td><td>${one(o.solver_avg)}</td><td>${one(o.layout_avg)}</td></tr>`).join("");
   box.innerHTML = `
     <div class="row"><h2>${esc(d.name)} <span class="muted">${esc(d.player)}</span></h2>
       <div class="spacer"></div><div class="muted">${d.games} games</div></div>
+    <div class="scores">
+      <div class="stat"><div class="k">win rate</div><div class="v">${pct(d.win_rate)}</div></div>
+      <div class="stat"><div class="k">solver ↓</div><div class="v">${one(d.solver_avg)}</div></div>
+      <div class="stat"><div class="k">layout ↑</div><div class="v">${one(d.layout_avg)}</div></div>
+    </div>
     <div class="grid2">
       <div><div class="muted">solver — turns to clear an opponent (lower is better)</div>${histSVG(d.solver_hist, "")}</div>
       <div><div class="muted">layout — turns opponents took to crack you (higher is better)</div>${histSVG(d.layout_hist, "layout")}</div>
@@ -107,6 +149,47 @@ async function showBot(uuid) {
     <h2 style="margin-top:1rem">vs each opponent</h2>
     <table><thead><tr><th class="l">opponent</th><th>games</th><th>win%</th><th>solver↓</th><th>layout↑</th></tr></thead>
       <tbody>${opps || '<tr><td class="muted">no games yet</td></tr>'}</tbody></table>`;
+}
+
+async function renderCompare(aUuid, bUuid) {
+  const box = el("compare");
+  if (!aUuid || !bUuid) { box.innerHTML = '<span class="muted">pick two bots above</span>'; return; }
+  if (aUuid === bUuid) { box.innerHTML = '<span class="muted">pick two different bots</span>'; return; }
+  const d = await getJSON(`/api/compare?a=${aUuid}&b=${bUuid}`);
+  if (!d.games) {
+    box.innerHTML = `<span class="muted">${esc(d.a.name)} and ${esc(d.b.name)} never played each other</span>`;
+    return;
+  }
+  const badge = (sig, p) => sig
+    ? `<span class="badge sig">significant · p ${p < 0.001 ? "< 0.001" : "= " + p.toFixed(3)}</span>`
+    : `<span class="badge nsig">not significant · p = ${p.toFixed(2)}</span>`;
+  const anySig = d.solve_delta_sig || d.win_rate_sig;
+  const verdict = anySig
+    ? `${esc(d.solve_leader)} is stronger`
+    : `${esc(d.a.name)} vs ${esc(d.b.name)}: statistical tie`;
+  box.innerHTML = `
+    <div class="row"><h2>${esc(d.a.name)} <span class="muted">${esc(d.a.player)}</span>
+      &nbsp;vs&nbsp; ${esc(d.b.name)} <span class="muted">${esc(d.b.player)}</span></h2>
+      <div class="spacer"></div><div class="muted">${d.games} head-to-head games</div></div>
+    <div class="verdict ${anySig ? "ok" : "tie"}">${verdict}</div>
+    <table class="cmp"><tbody>
+      <tr><td class="l">win rate</td>
+        <td>${esc(d.a.name)} <b>${pct(d.a_win_rate)}</b>
+            <span class="muted">(${d.a_wins}-${d.ties}-${d.b_wins})</span></td>
+        <td>${badge(d.win_rate_sig, d.win_rate_p)}</td></tr>
+      <tr><td class="l">mean solve</td>
+        <td>${esc(d.a.name)} ${one(d.a.solve_mean)}±${one(d.a.solve_sd)}
+            &nbsp;·&nbsp; ${esc(d.b.name)} ${one(d.b.solve_mean)}±${one(d.b.solve_sd)}</td>
+        <td></td></tr>
+      <tr><td class="l">solve delta</td>
+        <td><b>${esc(d.solve_leader)}</b> faster by ${Math.abs(d.solve_delta).toFixed(1)}
+            turns <span class="muted">(±${one(d.solve_delta_se)})</span></td>
+        <td>${badge(d.solve_delta_sig, d.solve_delta_p)}</td></tr>
+    </tbody></table>
+    <div class="grid2" style="margin-top:1rem">
+      <div><div class="muted">${esc(d.a.name)} — solve turns</div>${histSVG(d.a.solve_hist, "")}</div>
+      <div><div class="muted">${esc(d.b.name)} — solve turns</div>${histSVG(d.b.solve_hist, "b")}</div>
+    </div>`;
 }
 
 function renderPairings(pairs, bots) {

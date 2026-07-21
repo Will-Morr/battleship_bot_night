@@ -9,26 +9,56 @@
 <body>
   <header class="bar">
     <strong>🚢 Battleship Stats</strong>
-    <span class="muted">live tournament analytics</span>
+    <nav class="tabs">
+      <button data-tab="leaderboard" class="active">Leaderboard</button>
+      <button data-tab="bot">Bot</button>
+      <button data-tab="compare">Compare</button>
+    </nav>
     <div class="spacer"></div>
     <a href="/projector">projector view →</a>
   </header>
   <div class="wrap">
-    <div class="card">
-      <h2>Rankings</h2>
-      <div class="muted">click a bot for its score distributions and head-to-head record</div>
-      <table id="rankings"></table>
-    </div>
 
-    <div class="card" id="detail" data-bot="">
-      <span class="muted">select a bot above to see details</span>
-    </div>
+    <section id="tab-leaderboard" class="tab">
+      <div class="card">
+        <h2>Rankings</h2>
+        <div class="muted">click a bot for its full breakdown</div>
+        <table id="rankings"></table>
+      </div>
+      <div class="card">
+        <h2>Pairings</h2>
+        <div class="muted">win% of the row bot against the column bot</div>
+        <div style="overflow-x:auto"><table id="pairings"></table></div>
+      </div>
+    </section>
 
-    <div class="card">
-      <h2>Pairings</h2>
-      <div class="muted">win% of the row bot against the column bot</div>
-      <div style="overflow-x:auto"><table id="pairings"></table></div>
-    </div>
+    <section id="tab-bot" class="tab" hidden>
+      <div class="card">
+        <div class="row">
+          <h2>Single bot</h2>
+          <select id="botSelect" class="sel"></select>
+        </div>
+      </div>
+      <div class="card" id="detail" data-bot="">
+        <span class="muted">pick a bot above</span>
+      </div>
+    </section>
+
+    <section id="tab-compare" class="tab" hidden>
+      <div class="card">
+        <div class="row">
+          <h2>Direct comparison</h2>
+          <select id="cmpA" class="sel"></select>
+          <span class="muted">vs</span>
+          <select id="cmpB" class="sel"></select>
+        </div>
+        <div class="muted">head-to-head over only the games these two played each other</div>
+      </div>
+      <div class="card" id="compare">
+        <span class="muted">pick two bots above</span>
+      </div>
+    </section>
+
   </div>
   <script src="/static/app.js"></script>
   <script>initStats();</script>
