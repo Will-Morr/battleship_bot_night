@@ -6,6 +6,7 @@ DATA_CONTRACTS.md §2.
 """
 
 import importlib.util
+import random
 
 
 class Bot:
@@ -47,6 +48,30 @@ def neighbors(cell, rows, cols):
         if 0 <= nr < rows and 0 <= nc < cols:
             out.append((nr, nc))
     return out
+
+
+def random_layout(config, rng=random):
+    """A legal random placement of the whole fleet — no overlaps. Handy default for
+    bots that don't care where their ships go. `rng` lets callers seed it."""
+    rows, cols, fleet = config["rows"], config["cols"], config["fleet"]
+    occupied = set()
+    layout = []
+    for ship in fleet:
+        name, size = ship["name"], ship["size"]
+        while True:
+            if rng.choice(("H", "V")) == "H":
+                r, c = rng.randrange(rows), rng.randrange(cols - size + 1)
+                cells = [(r, c + i) for i in range(size)]
+                orient = "H"
+            else:
+                r, c = rng.randrange(rows - size + 1), rng.randrange(cols)
+                cells = [(r + i, c) for i in range(size)]
+                orient = "V"
+            if occupied.isdisjoint(cells):
+                occupied.update(cells)
+                layout.append({"name": name, "row": r, "col": c, "orientation": orient})
+                break
+    return layout
 
 
 # -- loading a bot file --------------------------------------------------------
