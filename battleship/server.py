@@ -1,0 +1,366 @@
+"""Tournament server: one asyncio process running the ZeroMQ ROUTER (bot comms), the
+continuous tourney loop, the off-loop SQLite writer, and the aiohttp HTTP surface
+(sync + db download; analytics endpoints are added in analytics.py). See PLAN.md.
+
+Concurrency model:
+- All bot messages flow through one ROUTER socket and `_recv_loop`.
+- A synchronous round is one `Exchange`: the dispatcher sends a batch to each session
+  and awaits their replies (routed in by `_recv_loop`) until the whole-request deadline.
+- Every DB write runs on a single-thread executor (the writer), so the event loop never
+  blocks on SQLite; reads use their own read-only connections via `asyncio.to_thread`.
+"""
+
+import argparse
+import asyncio
+import hashlib
+import os
+import random
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import zmq
+import zmq.asyncio
+from aiohttp import web
+
+from . import config as cfg
+from . import protocol as p
+from .db import Database, connect, new_uuid
+from .tourney import TourneyEngine
+
+RUNNER_VERSION = "1"
+
+
+class Session:
+    """A connected bot session: its ROUTER identity and logical-bot identity."""
+
+    def __init__(self, uuid, identity, bot_uuid, player, bot_name):
+        self.uuid = uuid
+        self.identity = identity
+        self.bot_uuid = bot_uuid
+        self.player = player
+        self.bot_name = bot_name
+        self.alive = True
+        self.last_seen = time.time()
+        self.ping_misses = 0
+
+    def as_participant(self):
+        return {"session_uuid": self.uuid, "bot_uuid": self.bot_uuid, "player": self.player}
+
+
+class Exchange:
+    """Collects one batched round's replies, keyed by session uuid."""
+
+    def __init__(self, expected, kind):
+        self.expected = set(expected)
+        self.kind = kind          # 'place' or 'move'
+        self.replies = {}
+        self.event = asyncio.Event()
+
+    def add(self, session_uuid, data):
+        self.replies[session_uuid] = data
+        if self.expected <= set(self.replies):
+            self.event.set()
+
+
+class ZmqDispatcher:
+    """Adapts the ROUTER socket to the engine's dispatcher interface."""
+
+    def __init__(self, server):
+        self.server = server
+
+    async def request_placements(self, requests, config, deadline_ms):
+        expected = await self.server.send_place_requests(requests, config, deadline_ms)
+        return await self.server.collect(expected, deadline_ms, "place")
+
+    async def request_moves(self, requests, deadline_ms):
+        expected = await self.server.send_move_requests(requests, deadline_ms)
+        return await self.server.collect(expected, deadline_ms, "move")
+
+
+class Server:
+    def __init__(self, db_path, zmq_port=5555, http_port=8080, target=cfg.TARGET_GAMES,
+                 gap_ms=cfg.TOURNEY_GAP_MS, seed=None):
+        self.db = Database(db_path)
+        self.config = cfg.default_config()
+        self.zmq_port = zmq_port
+        self.http_port = http_port
+        self.target = target
+        self.gap = gap_ms / 1000.0
+        self.rng = random.Random(seed)
+
+        self.ctx = zmq.asyncio.Context.instance()
+        self.router = None
+        self.writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db-writer")
+        self.snapshot_dir = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".",
+                                         "snapshots")
+        os.makedirs(self.snapshot_dir, exist_ok=True)
+
+        self.sessions = {}          # session_uuid -> Session
+        self.by_identity = {}       # identity bytes -> session_uuid
+        self._exchange = None       # the in-flight Exchange, if any
+        self._tourney_wire_id = 0   # compact per-tourney id sent on the wire
+        self._ping_window = 0.15
+        self._max_ping_misses = 3
+        self.running = False
+
+    # -- write/read plumbing ----------------------------------------------------
+
+    def _write(self, fn):
+        """Run a DB write on the single writer thread. Returns an awaitable."""
+        return asyncio.get_running_loop().run_in_executor(self.writer, fn, self.db)
+
+    async def send(self, identity, message):
+        await self.router.send_multipart([identity, p.encode(message)])
+
+    # -- ROUTER receive ---------------------------------------------------------
+
+    async def _recv_loop(self):
+        while self.running:
+            try:
+                identity, raw = await self.router.recv_multipart()
+            except (asyncio.CancelledError, zmq.ContextTerminated):
+                break
+            try:
+                message = p.decode(raw)
+            except Exception:
+                continue
+            self._handle(identity, message)
+
+    def _handle(self, identity, message):
+        mtype = message.get("type")
+        if mtype == p.REGISTER:
+            asyncio.create_task(self._register(identity, message))
+            return
+        session = self.sessions.get(self.by_identity.get(identity))
+        if session is None:
+            return  # unknown/retired identity; ignore (must re-register)
+        session.last_seen = time.time()
+        session.ping_misses = 0
+        if mtype in (p.MOVE_REPLY, p.PLACE_REPLY):
+            self._on_reply(session.uuid, message, "move" if mtype == p.MOVE_REPLY else "place")
+        elif mtype == p.BYE:
+            self._retire(session.uuid, "bye")
+        # PONG needs nothing beyond the last_seen bump above.
+
+    def _on_reply(self, session_uuid, message, kind):
+        ex = self._exchange
+        if ex is None or ex.kind != kind or session_uuid not in ex.expected:
+            return
+        if kind == "move":
+            compute = message.get("compute_ms", {})
+            data = {}
+            for handle, cell in message.get("moves", {}).items():
+                data[int(handle)] = (cell, compute.get(handle))
+        else:
+            data = {int(handle): layout for handle, layout in message.get("placements", {}).items()}
+        ex.add(session_uuid, data)
+
+    # -- registration / session lifecycle --------------------------------------
+
+    async def _register(self, identity, message):
+        player, bot = message.get("player"), message.get("bot")
+        if not player or not bot:
+            await self.send(identity, p.msg(p.KICK, reason="register needs player and bot"))
+            return
+        # Re-registering a live logical bot retires its old session (DATA_CONTRACTS §3).
+        for existing in [s for s in self.sessions.values()
+                         if s.alive and s.player == player and s.bot_name == bot]:
+            self._retire(existing.uuid, "superseded")
+
+        code = message.get("code", "")
+        session_uuid = new_uuid()
+        now = time.time()
+        bot_uuid = await self._write(lambda db: db.register_session(
+            player=player, bot_name=bot, session_uuid=session_uuid, code=code,
+            code_filename=message.get("code_filename"),
+            code_hash=hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            runner_version=message.get("runner_version"), now=now))
+
+        session = Session(session_uuid, identity, bot_uuid, player, bot)
+        self.sessions[session_uuid] = session
+        self.by_identity[identity] = session_uuid
+        await self.send(identity, p.msg(p.REGISTERED, uuid=session_uuid, bot_uuid=bot_uuid,
+                                        config=self.config))
+
+    def _retire(self, session_uuid, reason):
+        session = self.sessions.pop(session_uuid, None)
+        if session is None:
+            return
+        session.alive = False
+        self.by_identity.pop(session.identity, None)
+        now = time.time()
+        asyncio.create_task(self._write(lambda db: db.close_session(session_uuid, now)))
+
+    # -- batched exchange (used by ZmqDispatcher) -------------------------------
+
+    async def send_move_requests(self, requests, deadline_ms):
+        expected = []
+        for session_uuid, games in requests.items():
+            session = self.sessions.get(session_uuid)
+            if session is None or not session.alive:
+                continue  # retired/dead -> no reply -> the engine forfeits its games
+            views = {str(handle): view for handle, view in games.items()}
+            await self.send(session.identity, p.msg(
+                p.MOVE_REQUEST, tourney_id=self._tourney_wire_id,
+                deadline_ms=deadline_ms, views=views))
+            expected.append(session_uuid)
+        return expected
+
+    async def send_place_requests(self, requests, config, deadline_ms):
+        expected = []
+        for session_uuid, handles in requests.items():
+            session = self.sessions.get(session_uuid)
+            if session is None or not session.alive:
+                continue
+            await self.send(session.identity, p.msg(
+                p.PLACE_REQUEST, tourney_id=self._tourney_wire_id,
+                config=config, games=list(handles)))
+            expected.append(session_uuid)
+        return expected
+
+    async def collect(self, expected, deadline_ms, kind):
+        if not expected:
+            return {}
+        ex = Exchange(expected, kind)
+        self._exchange = ex
+        try:
+            await asyncio.wait_for(ex.event.wait(), timeout=deadline_ms / 1000.0)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._exchange = None
+        return ex.replies
+
+    # -- continuous tourney loop ------------------------------------------------
+
+    async def _gather_participants(self):
+        """Ping everyone, wait briefly, prune non-responders, and return the alive set."""
+        sessions = list(self.sessions.values())
+        if not sessions:
+            return []
+        for s in sessions:
+            await self.send(s.identity, p.msg(p.PING, t=time.time()))
+        pinged_at = time.time()
+        await asyncio.sleep(self._ping_window)
+        alive = []
+        for s in sessions:
+            if s.uuid not in self.sessions:
+                continue
+            if s.last_seen >= pinged_at:
+                s.ping_misses = 0
+                alive.append(s)
+            else:
+                s.ping_misses += 1
+                if s.ping_misses >= self._max_ping_misses:
+                    self._retire(s.uuid, "unresponsive")
+        return alive
+
+    async def _tourney_loop(self):
+        while self.running:
+            participants = await self._gather_participants()
+            if len(participants) < 2:
+                await asyncio.sleep(self.gap)
+                continue
+            await self._run_tourney(participants)
+            await asyncio.sleep(self.gap)
+
+    async def _run_tourney(self, participants):
+        tourney_uuid = new_uuid()
+        self._tourney_wire_id += 1
+        wire_id = self._tourney_wire_id
+        await self._write(lambda db: db.start_tourney(tourney_uuid, self.config, time.time()))
+        for s in participants:
+            await self.send(s.identity, p.msg(p.TOURNEY_START, tourney_id=wire_id))
+
+        engine = TourneyEngine(tourney_uuid, [s.as_participant() for s in participants],
+                               self.config, self.target, self.rng,
+                               blackout_grace=cfg.BLACKOUT_GRACE)
+        records = await engine.run(ZmqDispatcher(self))
+
+        await self._write(lambda db: db.mark_tourney_bots(
+            tourney_uuid, list(engine.participant_bot_uuids())))
+        if records:
+            await self._write(lambda db: db.record_games(records))
+        await self._write(lambda db: db.finish_tourney(tourney_uuid, engine.num_games, time.time()))
+
+        for dead in engine.dead_sessions:
+            self._retire(dead, "blackout")
+        for s in participants:
+            if s.uuid in self.sessions:
+                await self.send(s.identity, p.msg(p.TOURNEY_END, tourney_id=wire_id))
+
+    # -- HTTP -------------------------------------------------------------------
+
+    def http_app(self):
+        app = web.Application()
+        app.add_routes([
+            web.get("/health", self._h_health),
+            web.get("/sync", self._h_sync),
+            web.get("/db", self._h_db),
+        ])
+        return app
+
+    async def _h_health(self, request):
+        return web.json_response({"ok": True, "sessions": len(self.sessions)})
+
+    async def _h_sync(self, request):
+        games = int(request.query.get("games", 0))
+        moves = int(request.query.get("moves", 0))
+        data = await asyncio.to_thread(self._read_sync, games, moves)
+        return web.json_response(data)
+
+    def _read_sync(self, games_cursor, moves_cursor):
+        conn = connect(self.db.path, readonly=True)
+        try:
+            return self.db.sync_since(games_cursor, moves_cursor, conn=conn)
+        finally:
+            conn.close()
+
+    async def _h_db(self, request):
+        dest = os.path.join(self.snapshot_dir, f"snapshot-{new_uuid()}.db")
+        await self._write(lambda db: db.snapshot(dest))
+        return web.FileResponse(dest, headers={"Content-Disposition": "attachment; filename=battleship.db"})
+
+    # -- lifecycle --------------------------------------------------------------
+
+    async def serve(self):
+        self.running = True
+        self.router = self.ctx.socket(zmq.ROUTER)
+        self.router.setsockopt(zmq.HEARTBEAT_IVL, 2000)     # ZMTP keepalive backstop
+        self.router.setsockopt(zmq.HEARTBEAT_TIMEOUT, 6000)
+        self.router.bind(f"tcp://*:{self.zmq_port}")
+
+        runner = web.AppRunner(self.http_app())
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", self.http_port)
+        await site.start()
+
+        print(f"server: ZMQ tcp://*:{self.zmq_port}  HTTP http://0.0.0.0:{self.http_port}")
+        try:
+            await asyncio.gather(self._recv_loop(), self._tourney_loop())
+        finally:
+            self.running = False
+            await runner.cleanup()
+            self.router.close(0)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Battleship tournament server.")
+    ap.add_argument("--db", default="battleship.db", help="SQLite path (default battleship.db)")
+    ap.add_argument("--zmq-port", type=int, default=5555)
+    ap.add_argument("--http-port", type=int, default=8080)
+    ap.add_argument("--target", type=int, default=cfg.TARGET_GAMES, help="games/bot/tourney")
+    ap.add_argument("--gap-ms", type=int, default=cfg.TOURNEY_GAP_MS, help="pause between tourneys")
+    ap.add_argument("--seed", type=int, default=None)
+    args = ap.parse_args(argv)
+
+    server = Server(args.db, zmq_port=args.zmq_port, http_port=args.http_port,
+                    target=args.target, gap_ms=args.gap_ms, seed=args.seed)
+    try:
+        asyncio.run(server.serve())
+    except KeyboardInterrupt:
+        print("\nshutting down")
+
+
+if __name__ == "__main__":
+    main()

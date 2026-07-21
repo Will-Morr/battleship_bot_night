@@ -36,17 +36,16 @@ Constraints: each active bot gets ~`target` games, no same-player pairings (and 
 bot-vs-itself), otherwise **fully random** — no repeat-avoidance, no seeding, no
 skill-matching. Repeat pairings are allowed and expected.
 
-Pairing is a uniform random matching of a slot multiset, conditioned on the constraint,
-via **rejection sampling** (shuffling + adjacent pairing is already a uniform random
-matching; reshuffling until valid keeps it uniform conditioned on "no same-player"):
-1. Build a slot multiset — each active bot repeated `target` times.
-2. Shuffle and pair adjacent slots. If every pair is legal, accept — this draw is
-   uniform over legal matchings.
-3. If any pair is same-player, reshuffle and retry (bounded retries).
-4. **Fallback** (only if retries exhaust — one player owns ~half the slots, so random
-   draws rarely come out legal): repair collisions by swapping with a later valid slot,
-   and drop any still-unpairable tail. This case cannot be uniform regardless, since the
-   constraint itself is near-infeasible.
+Algorithm (a shuffled greedy match — reshuffling a whole matching until legal does not
+scale, since self / same-player collisions are near-certain across hundreds of slots):
+1. Build a slot multiset — each active bot repeated `target` times — and shuffle it.
+2. Sweep the shuffled slots. Pair each slot with the earliest still-waiting slot of a
+   *different* player; if none is waiting, it waits.
+3. Whatever is still waiting at the end can only be same-player slots (the dominant-
+   player tail) and is dropped.
+
+The shuffle makes opponents random with no structural bias; the sweep only enforces the
+constraint and maximizes how many legal games get formed.
 
 Degenerate cases, handled explicitly and unit-tested:
 - **Odd slot count:** one leftover slot is dropped (that bot gets `target-1` this

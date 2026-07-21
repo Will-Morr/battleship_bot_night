@@ -177,15 +177,17 @@ several. Default **250 ms** (the standard), configurable per tourney; it may opt
 scale with batch size (`base_ms + per_game_ms * num_games`, default per_game_ms small)
 so large batches stay feasible.
 
-At the deadline, the round is resolved from whatever `move_reply` arrived:
-- **Missed window (per game):** a game whose move is absent / late / illegal is
-  forfeited (instant loss for that bot; the game continues for the opponent, §6). A bot
-  may miss a few of these and stays connected.
-- **Total blackout (all windows at once):** if no usable move for *any* requested game
-  arrives by the deadline, the session is treated as dead/hung -> **auto-disconnect**:
-  all its remaining games forfeit and the bot is excluded until it re-registers (new
-  uuid). A small number of consecutive full blackouts is tolerated (`blackout_grace`,
-  default 1) to ride out a transient blip; ZMTP socket heartbeat is the backstop.
+At the deadline the round is resolved from whatever `move_reply` arrived:
+- **Missed window (partial):** if the session replied but a game's move is absent / late
+  / illegal, that game is forfeited (instant loss; the game continues for the opponent,
+  §6) and the session stays connected. A bot may miss a few of these — the "miss a few
+  windows" case.
+- **Total blackout (whole batch):** if nothing usable arrives for *any* of the session's
+  games, the session is unresponsive this round. Its games are **stalled** (not lost) for
+  up to `blackout_grace` consecutive rounds (default 1) to absorb a transient blip — a
+  bounded pause of at most grace x deadline, never an open-ended hang. Exceed the grace
+  (or lose the ZMTP heartbeat) and the session is **auto-disconnected**: every remaining
+  game forfeits ('drop') and the bot is excluded until it re-registers (new uuid).
 
 `compute_ms` is recorded but never gates anything — the deadline is authoritative.
 
