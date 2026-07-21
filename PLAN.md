@@ -32,12 +32,21 @@ other (WAL allows concurrent readers during a write). A DB flush can never eat i
 `deadline_ms`.
 
 ### Pairing (per tourney)
-Constraints: each active bot gets ~`target` games, no same-player pairings, otherwise
-random. Modeled as a degree-constrained random matching with forbidden same-player edges:
-1. Build a slot multiset — each active bot repeated `target` times — and shuffle it.
-2. Pair adjacent slots. If a pair is same-player (or a bot with itself), swap one member
-   with a later slot from a different player; scan forward for the first valid swap.
-3. Slots with no valid partner left (the dominant-player tail) are dropped.
+Constraints: each active bot gets ~`target` games, no same-player pairings (and no
+bot-vs-itself), otherwise **fully random** — no repeat-avoidance, no seeding, no
+skill-matching. Repeat pairings are allowed and expected.
+
+Pairing is a uniform random matching of a slot multiset, conditioned on the constraint,
+via **rejection sampling** (shuffling + adjacent pairing is already a uniform random
+matching; reshuffling until valid keeps it uniform conditioned on "no same-player"):
+1. Build a slot multiset — each active bot repeated `target` times.
+2. Shuffle and pair adjacent slots. If every pair is legal, accept — this draw is
+   uniform over legal matchings.
+3. If any pair is same-player, reshuffle and retry (bounded retries).
+4. **Fallback** (only if retries exhaust — one player owns ~half the slots, so random
+   draws rarely come out legal): repair collisions by swapping with a later valid slot,
+   and drop any still-unpairable tail. This case cannot be uniform regardless, since the
+   constraint itself is near-infeasible.
 
 Degenerate cases, handled explicitly and unit-tested:
 - **Odd slot count:** one leftover slot is dropped (that bot gets `target-1` this
