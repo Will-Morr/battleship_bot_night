@@ -8,22 +8,40 @@ game into one row per participating bot so everything is a simple GROUP BY.
 import json
 import math
 import statistics
+import time
+
+from . import config as cfg
 
 # One row per (bot, game) with that bot's perspective of the result.
 # A both-forfeit game has winner NULL (DATA_CONTRACTS.md §6), and `winner='a'` on NULL is
 # NULL, not 0 — so COALESCE every flag to keep `win`/`tie` plain 0/1 ints. Neither side
 # gets credit for such a game, which is the intended scoring.
-_PERSPECTIVES = """
+_PERSPECTIVE_SQL = """
 SELECT a_bot_uuid AS bot, b_bot_uuid AS opp,
        COALESCE(winner='a', 0) AS win, COALESCE(winner='tie', 0) AS tie,
-       a_solved_round AS solver, b_solved_round AS opp_solver, a_outcome AS outcome
-FROM games
+       a_solved_round AS solver, b_solved_round AS opp_solver, a_outcome AS outcome,
+       ended_at
+FROM {src}
 UNION ALL
 SELECT b_bot_uuid, a_bot_uuid,
        COALESCE(winner='b', 0), COALESCE(winner='tie', 0),
-       b_solved_round, a_solved_round, b_outcome
-FROM games
+       b_solved_round, a_solved_round, b_outcome,
+       ended_at
+FROM {src}
 """
+
+
+def _perspectives(src="games"):
+    """The per-(bot, game) view over `src` — the games table, or a subquery over it."""
+    return _PERSPECTIVE_SQL.format(src=src)
+
+
+_PERSPECTIVES = _perspectives()
+
+# The leaderboard scores a rolling window of the most recent games, so a bot cannot coast
+# on a record built against a field that has since improved. `seq` is the insertion
+# order, which is the order games finished.
+_RECENT = "(SELECT * FROM games ORDER BY seq DESC LIMIT :window)"
 
 
 def _percentiles(pairs, higher_better):
@@ -37,8 +55,18 @@ def _percentiles(pairs, higher_better):
     return {bot: 1.0 - i / (n - 1) for i, (bot, _) in enumerate(ordered)}
 
 
-def rankings(conn, active=frozenset()):
-    """Per-bot leaderboard rows, sorted by combined score (best first)."""
+def rankings(conn, active=frozenset(), window=cfg.LEADERBOARD_GAMES,
+             idle_sec=cfg.LEADERBOARD_IDLE_SEC, now=None):
+    """Per-bot leaderboard rows, best first.
+
+    Scored over the last `window` games only (None = all of history), so a bot that
+    farmed a weak early field cannot hold a rank the current field says it hasn't
+    earned. A bot with no game in the last `idle_sec` is dropped from the board unless
+    it still has a live session — it has left, and its stale numbers would sit above
+    bots that are actually playing.
+    """
+    now = time.time() if now is None else now
+    src = _RECENT if window else "games"
     rows = conn.execute(f"""
         SELECT bot,
                COUNT(*) AS games,
@@ -46,19 +74,24 @@ def rankings(conn, active=frozenset()):
                SUM(tie) AS ties,
                AVG(CASE WHEN solver IS NOT NULL THEN solver END) AS solver_avg,
                AVG(CASE WHEN opp_solver IS NOT NULL THEN opp_solver END) AS layout_avg,
-               SUM(CASE WHEN outcome='forfeit' THEN 1 ELSE 0 END) AS forfeits
-        FROM ({_PERSPECTIVES}) GROUP BY bot
-    """).fetchall()
+               SUM(CASE WHEN outcome='forfeit' THEN 1 ELSE 0 END) AS forfeits,
+               MAX(ended_at) AS last_played
+        FROM ({_perspectives(src)}) GROUP BY bot
+    """, {"window": window} if window else {}).fetchall()
     meta = {r["uuid"]: r for r in conn.execute("SELECT uuid, player, name FROM bots")}
 
     bots = []
     for r in rows:
         b = dict(r)
+        b["active"] = b["bot"] in active
+        idle = now - b["last_played"] if b["last_played"] is not None else None
+        if not b["active"] and idle_sec and (idle is None or idle > idle_sec):
+            continue
         m = meta.get(b["bot"])
         b["player"] = m["player"] if m else "?"
         b["name"] = m["name"] if m else "?"
         b["win_rate"] = (b["wins"] + 0.5 * b["ties"]) / b["games"] if b["games"] else 0.0
-        b["active"] = b["bot"] in active
+        b["idle_sec"] = idle
         bots.append(b)
 
     # Combined = mean of the (up to three) per-competition percentile ranks.

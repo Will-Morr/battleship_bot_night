@@ -102,7 +102,7 @@ def test_both_forfeit_game_scores_without_credit(tmp_path):
     assert detail["opponents"][0]["games"] == 2
     assert detail["opponents"][0]["win_rate"] == 0.5
 
-    board = {b["bot_uuid"]: b for b in scoring.rankings(d.conn)}
+    board = {b["bot_uuid"]: b for b in scoring.rankings(d.conn, window=None, idle_sec=0)}
     assert board[p1[0]]["wins"] == 1 and board[p1[0]]["win_rate"] == 0.5
     assert board[p2[0]]["wins"] == 0 and board[p2[0]]["win_rate"] == 0.0
 
@@ -112,7 +112,7 @@ def test_both_forfeit_game_scores_without_credit(tmp_path):
 
 def test_rankings_metrics(tmp_path):
     d, ids = seeded(tmp_path)
-    board = {b["bot_uuid"]: b for b in scoring.rankings(d.conn)}
+    board = {b["bot_uuid"]: b for b in scoring.rankings(d.conn, window=None, idle_sec=0)}
 
     p1 = board[ids["p1"]]
     assert p1["games"] == 2 and p1["wins"] == 2
@@ -133,7 +133,7 @@ def test_rankings_metrics(tmp_path):
 def test_rankings_order_by_win_rate(tmp_path):
     # The board ranks on win rate, not the combined score, and comes back in rank order.
     d, ids = seeded(tmp_path)
-    board = scoring.rankings(d.conn)
+    board = scoring.rankings(d.conn, window=None, idle_sec=0)
 
     assert [b["rank"] for b in board] == [1, 2, 3]           # returned in rank order
     rates = [b["win_rate"] for b in board]
@@ -143,6 +143,65 @@ def test_rankings_order_by_win_rate(tmp_path):
     assert board[1]["win_rate"] == 0.25 and board[2]["win_rate"] == 0.25
     # Equal win rates: more games played comes first.
     assert board[1]["games"] >= board[2]["games"]
+
+
+def windowed(tmp_path):
+    """An old bot with a perfect record against a weak field, then a newer field that
+    plays on. `now` is 1000.0; the old bot's last game is 20 minutes before that."""
+    d = Database(tmp_path / "w.db")
+    old, weak, a, b = (reg(d, "old"), reg(d, "weak"), reg(d, "a"), reg(d, "b"))
+    t = db.new_uuid()
+    d.start_tourney(t, {}, 1.0)
+
+    def at(g, ended):
+        g["ended_at"] = ended
+        return g
+
+    games = [at(game(t, old, weak, winner="a", ao="win", bo="loss", asr=20, bsr=90), -200.0)
+             for _ in range(6)]
+    games += [at(game(t, a, b, winner="a", ao="win", bo="loss", asr=40, bsr=50), 900.0),
+              at(game(t, b, a, winner="a", ao="win", bo="loss", asr=45, bsr=55), 950.0),
+              at(game(t, a, b, winner="b", ao="loss", bo="win", asr=60, bsr=41), 990.0)]
+    d.record_games(games)
+    return d, {"old": old[0], "weak": weak[0], "a": a[0], "b": b[0]}
+
+
+def test_rankings_window_scores_only_recent_games(tmp_path):
+    d, ids = windowed(tmp_path)
+
+    # Full history: the old bot's 6-0 record against a weak field tops the board.
+    everything = {b["bot_uuid"]: b for b in
+                  scoring.rankings(d.conn, window=None, idle_sec=0, now=1000.0)}
+    assert everything[ids["old"]]["games"] == 6
+    assert everything[ids["old"]]["win_rate"] == 1.0
+    assert everything[ids["old"]]["rank"] == 1
+
+    # Windowed to the 3 most recent games, those 6 are out of scope entirely.
+    recent = {b["bot_uuid"]: b for b in
+              scoring.rankings(d.conn, window=3, idle_sec=0, now=1000.0)}
+    assert ids["old"] not in recent and ids["weak"] not in recent
+    assert recent[ids["a"]]["games"] == 3 and recent[ids["b"]]["games"] == 3
+    assert sum(b["games"] for b in recent.values()) == 6      # 3 games, two sides each
+
+
+def test_rankings_hide_idle_bots_unless_connected(tmp_path):
+    d, ids = windowed(tmp_path)
+
+    # 15-minute cutoff: the old bot last played 20 minutes ago, so it drops off.
+    board = {b["bot_uuid"]: b for b in
+             scoring.rankings(d.conn, window=None, idle_sec=900, now=1000.0)}
+    assert ids["old"] not in board and ids["weak"] not in board
+    assert set(board) == {ids["a"], ids["b"]}
+    assert board[ids["a"]]["idle_sec"] == 10.0                # 1000.0 - 990.0
+
+    # A live session keeps a bot on the board however long it has been idle.
+    with_session = {b["bot_uuid"]: b for b in scoring.rankings(
+        d.conn, active=frozenset({ids["old"]}), window=None, idle_sec=900, now=1000.0)}
+    assert ids["old"] in with_session and with_session[ids["old"]]["active"] is True
+    assert ids["weak"] not in with_session
+
+    # Cutoff off entirely: everyone is back.
+    assert len(list(scoring.rankings(d.conn, window=None, idle_sec=0, now=1000.0))) == 4
 
 
 def test_pairings_merge(tmp_path):
