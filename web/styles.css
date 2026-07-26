@@ -106,13 +106,17 @@ table.cmp td.l { color: var(--muted); text-transform: uppercase; font-size: .78r
 .mini .c {
   aspect-ratio: 1; background: var(--bg); box-shadow: inset 0 0 0 1px var(--panel-2);
   display: flex; align-items: center; justify-content: center;
-  font-size: .6rem; color: var(--muted); font-variant-numeric: tabular-nums;
+  font-size: .6rem; font-variant-numeric: tabular-nums;
 }
+/* Shot numbers are always black and always the top layer — above the cell colour and
+   above the hull overlay, which is z-index 1 below. */
+.mini .n { position: relative; z-index: 2; color: #000; font-weight: 600; }
+.mini .n.sank { font-weight: 800; }
 .mini .c.ship { background: #1a2440; color: var(--ink); }   /* unguessed ship water */
 /* Guessed cells are coloured inline: light blue miss, red first hit, orange follow-up,
    each shaded from pale (early guess) to deep (late). See shotStyle() in app.js. */
 /* ship hulls: a circle per tile, joined along the ship's axis */
-.mini .ships { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.mini .ships { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: visible; }
 .ships line, .ships circle, .swship line, .swship circle {
   fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; stroke-linecap: round; }
 .ships .ink line, .ships .ink circle, .swship .ink line, .swship .ink circle {

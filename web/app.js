@@ -290,18 +290,19 @@ function shipCells(layout, fleet) {
 }
 
 // Shot colours: hue, saturation, and the lightness walked from the first guess to the
-// last, so within one family early shots read pale and late shots deep.
+// last, so within one family early shots read pale and late shots deep. Labels are black,
+// so each ramp stops where black still clears 4.5:1 — red bottoms out highest because a
+// saturated red is the darkest of the three at equal lightness.
 const SHOT_COLOR = {
-  miss:   { h: 197, s: 62, l0: 76, l1: 42 },   // light blue
-  first:  { h: 358, s: 70, l0: 66, l1: 34 },   // red — the shot that found a ship
-  follow: { h: 28, s: 88, l0: 68, l1: 38 },    // orange — hits on an already-found ship
+  miss:   { h: 197, s: 62, l0: 78, l1: 44 },   // light blue
+  first:  { h: 358, s: 72, l0: 74, l1: 54 },   // red — the shot that found a ship
+  follow: { h: 28, s: 88, l0: 74, l1: 40 },    // orange — hits on an already-found ship
 };
 
 function shotStyle(kind, f) {
   const c = SHOT_COLOR[kind];
   const l = c.l0 + (c.l1 - c.l0) * (f || 0);
-  // Flip the number to dark ink on the pale end so early guesses stay readable.
-  return `background:hsl(${c.h} ${c.s}% ${l.toFixed(1)}%);color:${l > 54 ? "#0b1020" : "#fff"}`;
+  return `background:hsl(${c.h} ${c.s}% ${l.toFixed(1)}%)`;
 }
 
 const swatch = (kind) => shotStyle(kind, 0.35);
@@ -329,7 +330,8 @@ function miniBoard(rows, cols, layout, fleet, shots) {
       const cls = [ship ? "ship" : "", s ? s.result : "", s ? s.kind : ""].filter(Boolean).join(" ");
       const style = s ? shotStyle(s.kind, (s.n - 1) / span) : "";
       const tip = `${key}${ship ? " " + ship : ""}${s ? ` — shot #${s.n}, round ${s.round}, ${s.result}` : ""}`;
-      const label = s ? (s.sunk_ship ? `<b>${s.n}</b>` : s.n) : "";
+      // The label sits above both the cell colour and the hull overlay (see .mini .n).
+      const label = s ? `<span class="n${s.sunk_ship ? " sank" : ""}">${s.n}</span>` : "";
       cells += `<div class="c ${cls}" style="${style}" title="${esc(tip)}">${label}</div>`;
     }
   }
