@@ -11,6 +11,7 @@ import statistics
 import time
 
 from . import config as cfg
+from . import game
 
 # One row per (bot, game) with that bot's perspective of the result.
 # A both-forfeit game has winner NULL (DATA_CONTRACTS.md §6), and `winner='a'` on NULL is
@@ -147,6 +148,81 @@ def rankings(conn, active=frozenset(), window=cfg.LEADERBOARD_GAMES,
     for i, b in enumerate(bots):
         b["rank"] = i + 1
     return bots
+
+
+# One bot's most recent games, optionally only those against `:vs`, tagged with the seat
+# it took so its own layout and its own shots can be picked out.
+_SAMPLE = """
+SELECT * FROM (
+  SELECT seq, uuid, tourney_uuid, 'a' AS side, a_layout_json AS layout FROM games
+  WHERE a_bot_uuid = :bot {a_vs} ORDER BY seq DESC LIMIT :games
+)
+UNION ALL
+SELECT * FROM (
+  SELECT seq, uuid, tourney_uuid, 'b', b_layout_json FROM games
+  WHERE b_bot_uuid = :bot {b_vs} ORDER BY seq DESC LIMIT :games
+)
+ORDER BY seq DESC LIMIT :games
+"""
+
+
+def _grid(rows, cols):
+    return [[0] * cols for _ in range(rows)]
+
+
+def heatmap(conn, bot_uuid, vs=None, games=cfg.HEATMAP_GAMES):
+    """Where a bot puts its ships and where it aims, over its last `games` games.
+
+    `vs` restricts the sample to games against that one opponent, which is what the
+    head-to-head view wants. Counts are per cell: `ships` is how many of those games had
+    a hull on that cell, `shots` is how many shots the bot fired at it.
+    """
+    sample = _SAMPLE.format(a_vs="AND b_bot_uuid = :vs" if vs else "",
+                            b_vs="AND a_bot_uuid = :vs" if vs else "")
+    params = {"bot": bot_uuid, "games": games, **({"vs": vs} if vs else {})}
+    sampled = conn.execute(sample, params).fetchall()
+
+    # Board size and fleet come from the tourney each game was played in.
+    configs = {}
+    for r in sampled:
+        if r["tourney_uuid"] not in configs:
+            row = conn.execute("SELECT config_json FROM tourneys WHERE uuid=?",
+                               (r["tourney_uuid"],)).fetchone()
+            try:
+                configs[r["tourney_uuid"]] = json.loads(row["config_json"]) if row else {}
+            except (TypeError, ValueError):
+                configs[r["tourney_uuid"]] = {}
+    latest = configs.get(sampled[0]["tourney_uuid"], {}) if sampled else {}
+    rows, cols = latest.get("rows", 10), latest.get("cols", 10)
+
+    ships = _grid(rows, cols)
+    for r in sampled:
+        sizes = cfg.fleet_sizes(configs.get(r["tourney_uuid"], {}).get("fleet", cfg.FLEET))
+        for placement in _json_list(r["layout"]):
+            for cell in game.placement_cells(placement, sizes) or ():
+                cr, cc = cell
+                if 0 <= cr < rows and 0 <= cc < cols:
+                    ships[cr][cc] += 1
+
+    shots = _grid(rows, cols)
+    for r in conn.execute(f"""
+        SELECT m.row AS row, m.col AS col, COUNT(*) AS n
+        FROM moves m JOIN ({sample}) s ON m.game_uuid = s.uuid AND m.side = s.side
+        GROUP BY m.row, m.col
+    """, params):
+        if 0 <= r["row"] < rows and 0 <= r["col"] < cols:
+            shots[r["row"]][r["col"]] = r["n"]
+
+    return {
+        "bot_uuid": bot_uuid,
+        "vs": vs,
+        "games": len(sampled),
+        "rows": rows,
+        "cols": cols,
+        "ships": ships,
+        "shots": shots,
+        "total_shots": sum(sum(row) for row in shots),
+    }
 
 
 def _histogram(values):

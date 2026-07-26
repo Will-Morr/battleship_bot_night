@@ -170,6 +170,9 @@ async function showBot(uuid) {
       <h2 style="margin-top:1rem">vs each opponent</h2>
       <table><thead><tr><th class="l">opponent</th><th>games</th><th>win%</th><th>solver↓</th><th>layout↑</th></tr></thead>
         <tbody id="botOpps"></tbody></table>
+      <h2 style="margin-top:1rem">heatmaps</h2>
+      <div class="muted">where this bot puts its ships, and where it aims — last 200 games</div>
+      <div class="grid2" id="botHeat"></div>
       <h2 style="margin-top:1rem">recent games</h2>
       <div class="muted">click a game to see both boards and the order each side guessed</div>
       <div id="recent"></div>
@@ -190,6 +193,9 @@ async function showBot(uuid) {
     <td>${o.games}</td><td>${pct(o.win_rate)}</td><td>${one(o.solver_avg)}</td><td>${one(o.layout_avg)}</td></tr>`).join("")
     || '<tr><td class="muted">no games yet</td></tr>');
   renderRecent(uuid);
+  loadHeat(uuid).then((h) => {
+    if (el("detail").dataset.bot === uuid) paint(el("botHeat"), heatPair(h, d.name));
+  });
 }
 
 // -- recent-games log --------------------------------------------------------
@@ -264,6 +270,48 @@ async function showGame(gameUuid, botUuid) {
         <span class="muted">numbers are the order that side's shots were fired; bold sank a ship</span>
       </div>
     </div>`);
+}
+
+// -- heatmaps ----------------------------------------------------------------
+
+// A count grid drawn as a board: intensity is the count against the busiest cell, so
+// the shape of a bot's habits reads at a glance rather than the absolute numbers.
+function heatGrid(counts, kind, unit) {
+  const rows = counts.length, cols = counts[0] ? counts[0].length : 0;
+  const max = Math.max(1, ...counts.map((r) => Math.max(...r)));
+  const rgb = kind === "ships" ? "77,163,255" : "251,146,60";
+  let cells = "";
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const v = counts[r][c];
+      // Floor the alpha on any non-zero cell so a single visit still shows.
+      const a = v ? 0.12 + 0.88 * (v / max) : 0;
+      cells += `<div class="c" style="background:rgba(${rgb},${a.toFixed(3)})"
+        title="${r},${c} — ${v} ${unit}"></div>`;
+    }
+  }
+  return `<div class="mini heat" style="--cols:${cols}">${cells}</div>
+    <div class="axis"><span>0</span><span>busiest cell: ${max} ${unit}</span></div>`;
+}
+
+function heatPair(h, title) {
+  if (!h || !h.games) return `<div class="muted">${esc(title)}: no games yet</div>`;
+  return `<div>
+      <div class="muted">${esc(title)} — ship placement <span class="muted">(${h.games} games)</span></div>
+      ${heatGrid(h.ships, "ships", "games")}
+    </div>
+    <div>
+      <div class="muted">${esc(title)} — guesses <span class="muted">(${h.total_shots.toLocaleString()} shots)</span></div>
+      ${heatGrid(h.shots, "shots", "shots")}
+    </div>`;
+}
+
+async function loadHeat(botUuid, vs) {
+  try {
+    return await getJSON(`/api/bot/${botUuid}/heatmap` + (vs ? `?vs=${vs}` : ""));
+  } catch (e) {
+    return null;
+  }
 }
 
 // One side's board: the layout it submitted, overlaid with the shots fired at it.
@@ -411,7 +459,20 @@ async function renderCompare(aUuid, bUuid) {
     <div class="grid2" style="margin-top:1rem">
       <div><div class="muted">${esc(d.a.name)} — solve turns</div>${histSVG(d.a.solve_hist, "")}</div>
       <div><div class="muted">${esc(d.b.name)} — solve turns</div>${histSVG(d.b.solve_hist, "b")}</div>
-    </div>`);
+    </div>
+    <h2 style="margin-top:1rem">heatmaps</h2>
+    <div class="muted">ships and guesses from these two bots' games against each other only</div>
+    <div class="grid2" id="cmpHeatA"></div>
+    <div class="grid2" id="cmpHeatB"></div>`);
+
+  // Each side's habits against this one opponent, which is often not how it plays the
+  // rest of the field. Fetched after the panel exists so the stats never wait on them.
+  const key = aUuid + "|" + bUuid;
+  Promise.all([loadHeat(aUuid, bUuid), loadHeat(bUuid, aUuid)]).then(([ha, hb]) => {
+    if (el("cmpA").value + "|" + el("cmpB").value !== key) return;   // selection moved on
+    paint(el("cmpHeatA"), heatPair(ha, d.a.name));
+    paint(el("cmpHeatB"), heatPair(hb, d.b.name));
+  });
 }
 
 function renderPairings(pairs, bots) {

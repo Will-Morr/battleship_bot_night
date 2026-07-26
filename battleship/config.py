@@ -32,6 +32,7 @@ BLACKOUT_GRACE = 1                # consecutive full blackouts tolerated before 
 # and head-to-head still cover the full record.
 LEADERBOARD_GAMES = 1000          # games per bot the board is scored on (None = all)
 LEADERBOARD_IDLE_SEC = 15 * 60    # hide a bot idle this long (0 = never hide)
+HEATMAP_GAMES = 200               # games per bot behind a placement / guess heatmap
 
 # Tourney sizing / cadence.
 TARGET_GAMES = 50                 # games per bot per tourney (a target, not a guarantee)

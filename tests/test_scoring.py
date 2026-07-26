@@ -212,6 +212,56 @@ def test_rankings_hide_idle_bots_unless_connected(tmp_path):
     assert len(list(scoring.rankings(d.conn, window=None, idle_sec=0, now=1000.0))) == 4
 
 
+def test_heatmap_counts_own_ships_and_own_shots(tmp_path):
+    d = Database(tmp_path / "h.db")
+    p1, p2, p3 = reg(d, "p1"), reg(d, "p2"), reg(d, "p3")
+    t = db.new_uuid()
+    d.start_tourney(t, {"rows": 10, "cols": 10,
+                        "fleet": [{"name": "destroyer", "size": 2}]}, 1.0)
+
+    def played(a, b, *, a_ship, b_ship, a_shot, b_shot):
+        g = game(t, a, b, winner="a", ao="win", bo="loss", asr=1, bsr=2)
+        g["a_layout"] = [{"name": "destroyer", "row": a_ship[0], "col": a_ship[1],
+                          "orientation": "H"}]
+        g["b_layout"] = [{"name": "destroyer", "row": b_ship[0], "col": b_ship[1],
+                          "orientation": "H"}]
+        g["moves"] = [
+            {"round": 1, "side": "a", "row": a_shot[0], "col": a_shot[1], "result": "miss",
+             "sunk_ship": None, "response_ms": 1.0},
+            {"round": 1, "side": "b", "row": b_shot[0], "col": b_shot[1], "result": "miss",
+             "sunk_ship": None, "response_ms": 1.0},
+        ]
+        return g
+
+    d.record_games([
+        # p1 on side a twice, then on side b — its own ships and shots must follow it.
+        played(p1, p2, a_ship=(0, 0), b_ship=(5, 5), a_shot=(9, 9), b_shot=(4, 4)),
+        played(p1, p2, a_ship=(0, 0), b_ship=(5, 5), a_shot=(9, 9), b_shot=(4, 4)),
+        played(p3, p1, a_ship=(7, 7), b_ship=(0, 0), a_shot=(1, 1), b_shot=(9, 9)),
+    ])
+
+    h = scoring.heatmap(d.conn, p1[0])
+    assert h["games"] == 3 and h["rows"] == 10 and h["cols"] == 10
+    # A size-2 destroyer at (0,0) horizontal covers (0,0) and (0,1), in all three games.
+    assert h["ships"][0][0] == 3 and h["ships"][0][1] == 3
+    assert h["ships"][5][5] == 0 and h["ships"][7][7] == 0      # opponents' ships
+    assert sum(map(sum, h["ships"])) == 6                       # 3 games x 2 cells
+    assert h["shots"][9][9] == 3 and h["shots"][4][4] == 0      # p1 always fired at 9,9
+    assert h["total_shots"] == 3
+
+    # The opponent's map is the mirror image.
+    h2 = scoring.heatmap(d.conn, p2[0])
+    assert h2["games"] == 2 and h2["ships"][5][5] == 2 and h2["shots"][4][4] == 2
+
+    # ?vs= keeps only the pair's games.
+    hv = scoring.heatmap(d.conn, p1[0], vs=p3[0])
+    assert hv["games"] == 1 and hv["total_shots"] == 1
+    assert hv["ships"][0][0] == 1 and hv["shots"][9][9] == 1
+
+    # The sample is bounded and takes the most recent games first.
+    assert scoring.heatmap(d.conn, p1[0], games=1)["games"] == 1
+
+
 def test_pairings_merge(tmp_path):
     d, ids = seeded(tmp_path)
     pairs = scoring.pairings(d.conn)

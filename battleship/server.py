@@ -346,6 +346,7 @@ class Server:
             web.get("/api/bots", self._h_bots),
             web.get("/api/bot/{uuid}", self._h_bot),
             web.get("/api/bot/{uuid}/games", self._h_bot_games),
+            web.get("/api/bot/{uuid}/heatmap", self._h_bot_heatmap),
             web.get("/api/game/{uuid}", self._h_game),
             web.get("/api/compare", self._h_compare),
             web.get("/api/pairings", self._h_pairings),
@@ -401,6 +402,17 @@ class Server:
             return web.json_response({"error": "limit must be an integer"}, status=400)
         return web.json_response(
             await self._read(lambda c: scoring.recent_games(c, uuid, limit)))
+
+    async def _h_bot_heatmap(self, request):
+        uuid = request.match_info["uuid"]
+        # ?vs= narrows the sample to games against one opponent (the head-to-head view).
+        vs = request.query.get("vs") or None
+        try:
+            games = max(1, min(2000, int(request.query.get("games", cfg.HEATMAP_GAMES))))
+        except ValueError:
+            return web.json_response({"error": "games must be an integer"}, status=400)
+        return web.json_response(
+            await self._read(lambda c: scoring.heatmap(c, uuid, vs, games)))
 
     async def _h_game(self, request):
         uuid = request.match_info["uuid"]

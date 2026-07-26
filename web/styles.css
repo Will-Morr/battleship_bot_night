@@ -98,6 +98,10 @@ table.cmp td.l { color: var(--muted); text-transform: uppercase; font-size: .78r
 .toggle { color: var(--muted); font-size: .82rem; cursor: pointer; user-select: none; }
 .toggle input { accent-color: var(--accent); vertical-align: -2px; margin-right: .2rem; }
 
+/* heatmaps: same board geometry as a replay, coloured by count */
+.mini.heat .c { background: var(--bg); }
+.mini.heat .c:hover { box-shadow: inset 0 0 0 1px var(--accent); }
+
 /* recent-games replay: one mini board per side */
 .replay { background: var(--panel-2); margin: .75rem 0 0; }
 /* No grid gap: the ship overlay maps cell (r,c) to (c+.5, r+.5), so the cells must sit
