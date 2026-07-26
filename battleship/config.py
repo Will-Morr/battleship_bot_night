@@ -25,6 +25,14 @@ DEADLINE_PER_GAME_MS = 3.0        # deadline = MOVE_TIME_MS + this * num_games
 PLACE_TIME_MS = 1000              # whole-batch budget for layouts (once per tourney)
 BLACKOUT_GRACE = 1                # consecutive full blackouts tolerated before drop
 
+# Leaderboard scope. Each bot is scored on its own most recent games rather than its
+# whole history, so a bot cannot keep a rank earned against a field that has since
+# improved, and a late joiner is judged on the same sample size as everyone else. A bot
+# with no game in IDLE_SEC drops off unless it still has a live session. Per-bot detail
+# and head-to-head still cover the full record.
+LEADERBOARD_GAMES = 1000          # games per bot the board is scored on (None = all)
+LEADERBOARD_IDLE_SEC = 15 * 60    # hide a bot idle this long (0 = never hide)
+
 # Tourney sizing / cadence.
 TARGET_GAMES = 50                 # games per bot per tourney (a target, not a guarantee)
 TOURNEY_GAP_MS = 1000             # pause between back-to-back tourneys

@@ -133,12 +133,13 @@ function openBot(uuid) {
 
 function renderRankings(rows) {
   paint(el("rankings"), `
-    <thead><tr><th>#</th><th class="l">bot</th><th class="l">player</th><th>games</th>
+    <thead><tr><th>#</th><th class="l">bot</th><th class="l">player</th><th title="games scored (the bot's most recent 1000) / games it has played">scored / played</th>
       <th class="sorted">win% ↓</th><th>solver↓</th><th>layout↑</th><th>combined</th><th></th></tr></thead>
     <tbody>${rows.map((r) => `
       <tr class="clickable ${r.active ? "" : "inactive"}" onclick="openBot('${r.bot_uuid}')">
         <td>${r.rank}</td><td class="l">${esc(r.name)}</td><td class="l">${esc(r.player)}</td>
-        <td>${r.games}</td><td>${pct(r.win_rate)}</td><td>${one(r.solver_avg)}</td>
+        <td>${r.games}<span class="muted"> / ${(r.total_games ?? r.games).toLocaleString()}</span></td>
+        <td>${pct(r.win_rate)}</td><td>${one(r.solver_avg)}</td>
         <td>${one(r.layout_avg)}</td>
         <td><div class="bar"><span style="width:${(r.combined * 100).toFixed(0)}%"></span></div></td>
         <td>${r.active ? '<span class="tag on">live</span>' : '<span class="tag">idle</span>'}</td>
