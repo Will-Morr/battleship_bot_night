@@ -27,8 +27,14 @@ class Bot(Bot):
         ]
 
     def make_move(self, view):
-        # `view` is the delta since your last move (this bot ignores it entirely).
+        # `view` is the delta since your last move. Careful: make_move can be called
+        # more than once for the same round — a stalled round (DATA_CONTRACTS.md §3,
+        # "total blackout") is re-sent with the same view — so a blind counter drifts
+        # ahead of the board and eventually runs off the end of self.cells. Advance
+        # only once the engine confirms our previous shot landed: `your_last` is the
+        # shot it actually applied.
+        last = view.get("your_last")
+        if last is not None and list(last["cell"]) == list(self.cells[self.i]):
+            self.i += 1
         # Return the next target as [row, col].
-        cell = self.cells[self.i]
-        self.i += 1
-        return list(cell)
+        return list(self.cells[self.i])

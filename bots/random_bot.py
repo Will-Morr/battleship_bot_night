@@ -24,6 +24,7 @@ class Bot(Bot):
         # so never an illegal move).
         self.unfired = [(r, c) for r in range(self.rows) for c in range(self.cols)]
         random.shuffle(self.unfired)
+        self.target = None  # the shot we are waiting to see applied
 
     def place_ships(self):
         # A layout is one {name, row, col, orientation} dict per ship in the fleet.
@@ -51,6 +52,14 @@ class Bot(Bot):
         return layout
 
     def make_move(self, view):
-        # `view` is the delta since your last move (this bot ignores it entirely).
+        # `view` is the delta since your last move. Careful: make_move can be called
+        # more than once for the same round — a stalled round (DATA_CONTRACTS.md §3,
+        # "total blackout") is re-sent with the same view — so popping on every call
+        # burns cells the board never saw and eventually empties self.unfired. Pop a
+        # new target only once the engine confirms the previous one landed:
+        # `your_last` is the shot it actually applied.
+        last = view.get("your_last")
+        if self.target is None or (last is not None and list(last["cell"]) == list(self.target)):
+            self.target = self.unfired.pop()
         # Return the next target as [row, col].
-        return list(self.unfired.pop())
+        return list(self.target)
