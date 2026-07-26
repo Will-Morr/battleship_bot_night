@@ -74,7 +74,12 @@ def rankings(conn, active=frozenset()):
         b["combined"] = sum(parts) / len(parts)
         b["bot_uuid"] = b.pop("bot")
 
-    bots.sort(key=lambda b: b["combined"], reverse=True)
+    # The leaderboard ranks on win rate. `combined` is still reported (the UI shows it as
+    # a bar) but no longer decides the order. Ties break on games played — a bot that held
+    # a win rate over more games has the better-evidenced one — then on solver speed.
+    bots.sort(key=lambda b: (b["win_rate"], b["games"],
+                             -(b["solver_avg"] if b["solver_avg"] is not None else 1e9)),
+              reverse=True)
     for i, b in enumerate(bots):
         b["rank"] = i + 1
     return bots
