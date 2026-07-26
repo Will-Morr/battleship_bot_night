@@ -166,7 +166,7 @@ def windowed(tmp_path):
     return d, {"old": old[0], "weak": weak[0], "a": a[0], "b": b[0]}
 
 
-def test_rankings_window_scores_only_recent_games(tmp_path):
+def test_rankings_window_is_per_bot(tmp_path):
     d, ids = windowed(tmp_path)
 
     # Full history: the old bot's 6-0 record against a weak field tops the board.
@@ -176,12 +176,20 @@ def test_rankings_window_scores_only_recent_games(tmp_path):
     assert everything[ids["old"]]["win_rate"] == 1.0
     assert everything[ids["old"]]["rank"] == 1
 
-    # Windowed to the 3 most recent games, those 6 are out of scope entirely.
+    # Windowed to 3: every bot is scored on ITS OWN last 3 games, so each one that has
+    # played at least 3 shows 3 — not a share of one global window.
     recent = {b["bot_uuid"]: b for b in
               scoring.rankings(d.conn, window=3, idle_sec=0, now=1000.0)}
-    assert ids["old"] not in recent and ids["weak"] not in recent
-    assert recent[ids["a"]]["games"] == 3 and recent[ids["b"]]["games"] == 3
-    assert sum(b["games"] for b in recent.values()) == 6      # 3 games, two sides each
+    assert {b: recent[b]["games"] for b in recent} == {
+        ids["old"]: 3, ids["weak"]: 3, ids["a"]: 3, ids["b"]: 3}
+    # A bot with fewer games than the window keeps all of them.
+    assert {b: recent[b]["total_games"] for b in recent} == {
+        ids["old"]: 6, ids["weak"]: 6, ids["a"]: 3, ids["b"]: 3}
+
+    # Bot a won only the first of its three games (it sat on side b for the second),
+    # so scoring those three gives it 1 of 3.
+    assert recent[ids["a"]]["win_rate"] == 1 / 3
+    assert recent[ids["b"]]["win_rate"] == 2 / 3
 
 
 def test_rankings_hide_idle_bots_unless_connected(tmp_path):

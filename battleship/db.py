@@ -94,6 +94,11 @@ CREATE INDEX IF NOT EXISTS idx_moves_game ON moves(game_uuid, round);
 CREATE INDEX IF NOT EXISTS idx_games_tourney ON games(tourney_uuid);
 CREATE INDEX IF NOT EXISTS idx_games_a_bot ON games(a_bot_uuid);
 CREATE INDEX IF NOT EXISTS idx_games_b_bot ON games(b_bot_uuid);
+-- Separate (bot, seq) indexes, under new names so an existing DB picks them up on the
+-- next start: the leaderboard wants each bot's most recent N games, which these serve
+-- as a bounded backward index scan instead of a scan-and-sort.
+CREATE INDEX IF NOT EXISTS idx_games_a_bot_seq ON games(a_bot_uuid, seq);
+CREATE INDEX IF NOT EXISTS idx_games_b_bot_seq ON games(b_bot_uuid, seq);
 CREATE INDEX IF NOT EXISTS idx_sessions_bot ON bot_sessions(bot_uuid);
 """
 

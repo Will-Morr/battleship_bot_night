@@ -38,10 +38,49 @@ def _perspectives(src="games"):
 
 _PERSPECTIVES = _perspectives()
 
-# The leaderboard scores a rolling window of the most recent games, so a bot cannot coast
-# on a record built against a field that has since improved. `seq` is the insertion
-# order, which is the order games finished.
-_RECENT = "(SELECT * FROM games ORDER BY seq DESC LIMIT :window)"
+# One bot's most recent `:window` games, from its own perspective — the leaderboard's
+# scoring set, so a bot cannot coast on a record built against a field that has since
+# improved. Each side is limited separately and the union re-limited, which lets the
+# (bot, seq) indexes serve it as a bounded backward scan instead of a full-table sort.
+# `seq` is insertion order, i.e. the order games finished.
+_BOT_WINDOW = """
+SELECT * FROM (
+  SELECT seq, COALESCE(winner='a', 0) AS win, COALESCE(winner='tie', 0) AS tie,
+         a_solved_round AS solver, b_solved_round AS opp_solver,
+         a_outcome AS outcome, ended_at
+  FROM games WHERE a_bot_uuid = :bot ORDER BY seq DESC {limit}
+)
+UNION ALL
+SELECT * FROM (
+  SELECT seq, COALESCE(winner='b', 0), COALESCE(winner='tie', 0),
+         b_solved_round, a_solved_round, b_outcome, ended_at
+  FROM games WHERE b_bot_uuid = :bot ORDER BY seq DESC {limit}
+)
+ORDER BY seq DESC {limit}
+"""
+
+
+def _bot_window(conn, bot_uuid, window):
+    """Aggregate one bot's last `window` games (None = its whole record)."""
+    limit = "LIMIT :window" if window else ""
+    return conn.execute(f"""
+        SELECT COUNT(*) AS games,
+               SUM(win) AS wins,
+               SUM(tie) AS ties,
+               AVG(CASE WHEN solver IS NOT NULL THEN solver END) AS solver_avg,
+               AVG(CASE WHEN opp_solver IS NOT NULL THEN opp_solver END) AS layout_avg,
+               SUM(CASE WHEN outcome='forfeit' THEN 1 ELSE 0 END) AS forfeits,
+               MAX(ended_at) AS last_played
+        FROM ({_BOT_WINDOW.format(limit=limit)})
+    """, {"bot": bot_uuid, "window": window}).fetchone()
+
+
+def _games_played(conn, bot_uuid):
+    """Every game this bot has played, window or no window — both index counts."""
+    return conn.execute(
+        "SELECT (SELECT COUNT(*) FROM games WHERE a_bot_uuid = :bot) "
+        "     + (SELECT COUNT(*) FROM games WHERE b_bot_uuid = :bot)",
+        {"bot": bot_uuid}).fetchone()[0]
 
 
 def _percentiles(pairs, higher_better):
@@ -59,39 +98,31 @@ def rankings(conn, active=frozenset(), window=cfg.LEADERBOARD_GAMES,
              idle_sec=cfg.LEADERBOARD_IDLE_SEC, now=None):
     """Per-bot leaderboard rows, best first.
 
-    Scored over the last `window` games only (None = all of history), so a bot that
-    farmed a weak early field cannot hold a rank the current field says it hasn't
-    earned. A bot with no game in the last `idle_sec` is dropped from the board unless
-    it still has a live session — it has left, and its stale numbers would sit above
-    bots that are actually playing.
+    Each bot is scored over its own last `window` games (None = its whole record), so a
+    bot that farmed a weak early field cannot hold a rank the current field says it
+    hasn't earned, and a bot that joined late is judged on the same sample size as
+    everyone else. A bot with no game in the last `idle_sec` is dropped from the board
+    unless it still has a live session — it has left, and its stale numbers would sit
+    above bots that are actually playing.
     """
     now = time.time() if now is None else now
-    src = _RECENT if window else "games"
-    rows = conn.execute(f"""
-        SELECT bot,
-               COUNT(*) AS games,
-               SUM(win) AS wins,
-               SUM(tie) AS ties,
-               AVG(CASE WHEN solver IS NOT NULL THEN solver END) AS solver_avg,
-               AVG(CASE WHEN opp_solver IS NOT NULL THEN opp_solver END) AS layout_avg,
-               SUM(CASE WHEN outcome='forfeit' THEN 1 ELSE 0 END) AS forfeits,
-               MAX(ended_at) AS last_played
-        FROM ({_perspectives(src)}) GROUP BY bot
-    """, {"window": window} if window else {}).fetchall()
-    meta = {r["uuid"]: r for r in conn.execute("SELECT uuid, player, name FROM bots")}
-
     bots = []
-    for r in rows:
-        b = dict(r)
-        b["active"] = b["bot"] in active
+    for m in conn.execute("SELECT uuid, player, name FROM bots").fetchall():
+        b = dict(_bot_window(conn, m["uuid"], window))
+        if not b["games"]:
+            continue
+        b["bot"] = m["uuid"]
+        b["active"] = m["uuid"] in active
         idle = now - b["last_played"] if b["last_played"] is not None else None
         if not b["active"] and idle_sec and (idle is None or idle > idle_sec):
             continue
-        m = meta.get(b["bot"])
-        b["player"] = m["player"] if m else "?"
-        b["name"] = m["name"] if m else "?"
+        b["player"] = m["player"]
+        b["name"] = m["name"]
         b["win_rate"] = (b["wins"] + 0.5 * b["ties"]) / b["games"] if b["games"] else 0.0
         b["idle_sec"] = idle
+        # `games` is the scoring window; `total_games` is everything the bot has played,
+        # so the board can show both without the window looking like a stalled counter.
+        b["total_games"] = _games_played(conn, m["uuid"])
         bots.append(b)
 
     # Combined = mean of the (up to three) per-competition percentile ranks.
