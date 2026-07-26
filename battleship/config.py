@@ -21,7 +21,8 @@ FLEET = [
 # One whole-request wall-clock budget per round (bot compute + comms). See
 # DATA_CONTRACTS.md §3. Optionally scaled by batch size.
 MOVE_TIME_MS = 250
-DEADLINE_PER_GAME_MS = 0.0        # deadline = MOVE_TIME_MS + this * num_games
+DEADLINE_PER_GAME_MS = 3.0        # deadline = MOVE_TIME_MS + this * num_games
+PLACE_TIME_MS = 1000              # whole-batch budget for layouts (once per tourney)
 BLACKOUT_GRACE = 1                # consecutive full blackouts tolerated before drop
 
 # Tourney sizing / cadence.

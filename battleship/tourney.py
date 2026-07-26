@@ -80,13 +80,15 @@ class Match:
 
 class TourneyEngine:
     def __init__(self, tourney_uuid, participants, config, target, rng,
-                 blackout_grace=cfg.BLACKOUT_GRACE, per_game_ms=cfg.DEADLINE_PER_GAME_MS):
+                 blackout_grace=cfg.BLACKOUT_GRACE, per_game_ms=cfg.DEADLINE_PER_GAME_MS,
+                 place_time_ms=cfg.PLACE_TIME_MS):
         self.tourney_uuid = tourney_uuid
         self.participants = participants
         self.config = config
         self.grace = blackout_grace
         self.move_time_ms = config["move_time_ms"]
         self.per_game_ms = per_game_ms
+        self.place_time_ms = place_time_ms
         self.dead_sessions = set()          # sessions the engine disconnected mid-tourney
         self._streak = defaultdict(int)      # consecutive full-blackout rounds per session
 
@@ -119,8 +121,8 @@ class TourneyEngine:
         for m in self.matches:
             requests[m.session("a")].append(m.handle)
             requests[m.session("b")].append(m.handle)
-        deadline = self._deadline(len(v) for v in requests.values())
-        replies = await dispatcher.request_placements(dict(requests), self.config, deadline)
+        replies = await dispatcher.request_placements(dict(requests), self.config,
+                                                      self.place_time_ms)
         for m in self.matches:
             layout_a = replies.get(m.session("a"), {}).get(m.handle)
             layout_b = replies.get(m.session("b"), {}).get(m.handle)

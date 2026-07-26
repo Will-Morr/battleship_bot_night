@@ -23,7 +23,11 @@ from . import protocol as p
 from .bot_api import load_bot
 
 RUNNER_VERSION = "1"
-RESYNC_AFTER = 5.0  # seconds of silence before assuming the session is stale
+# Seconds of silence before assuming the session is stale. Must comfortably exceed a
+# whole tourney: a bot whose own games all finish early hears nothing until the last
+# game in the field ends, and a spurious re-register retires its live session (the
+# server forfeits that session's in-flight games at placement).
+RESYNC_AFTER = 60.0
 
 
 def _timed(fn, *args):
