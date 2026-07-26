@@ -86,10 +86,10 @@ function initStats() {
   });
   window.openBot = openBot;
   window.openGame = openGame;
-  el("botSelect").onchange = (e) => showBot(e.target.value);
+  el("botSelect").onchange = (e) => { PICKED.bot = e.target.value; showBot(PICKED.bot); };
   el("autoRefresh").onchange = (e) => { if (e.target.checked) refresh(); };
-  el("cmpA").onchange = () => renderCompare(el("cmpA").value, el("cmpB").value);
-  el("cmpB").onchange = () => renderCompare(el("cmpA").value, el("cmpB").value);
+  el("cmpA").onchange = (e) => { PICKED.a = e.target.value; renderCompare(PICKED.a, PICKED.b); };
+  el("cmpB").onchange = (e) => { PICKED.b = e.target.value; renderCompare(PICKED.a, PICKED.b); };
   subscribe(refresh);
 }
 
@@ -101,19 +101,36 @@ async function refresh() {
   renderRankings(BOTS);
   renderPairings(await getJSON("/api/pairings"), BOTS);
   if (BOTS.length) {
-    fillSelect(el("botSelect"), BOTS[0].bot_uuid);
-    fillSelect(el("cmpA"), BOTS[0].bot_uuid);
-    fillSelect(el("cmpB"), (BOTS[1] || BOTS[0]).bot_uuid);
+    PICKED.bot = fillSelect(el("botSelect"), PICKED.bot, 0);
+    PICKED.a = fillSelect(el("cmpA"), PICKED.a, 0);
+    PICKED.b = fillSelect(el("cmpB"), PICKED.b, 1);
   }
-  if (currentTab === "bot" && el("botSelect").value) showBot(el("botSelect").value);
-  if (currentTab === "compare") renderCompare(el("cmpA").value, el("cmpB").value);
+  if (currentTab === "bot" && PICKED.bot) showBot(PICKED.bot);
+  if (currentTab === "compare") renderCompare(PICKED.a, PICKED.b);
 }
 
-function fillSelect(sel, def) {
-  const cur = sel.value;
-  sel.innerHTML = BOTS.map((b) =>
-    `<option value="${b.bot_uuid}">${esc(b.name)} (${esc(b.player)})</option>`).join("");
-  sel.value = BOTS.some((b) => b.bot_uuid === cur) ? cur : def;
+// What the reader chose, which is not the same thing as what the select happens to hold.
+// The board reorders every poll and a bot can leave it entirely (idle cutoff, or no game
+// in its window), and a selection rebuilt from the live list would then snap to whoever
+// is rank 1 that second — the view wandering on its own.
+const PICKED = { bot: null, a: null, b: null };
+const BOT_LABELS = new Map();          // uuid -> label, kept for bots that leave the board
+
+function fillSelect(sel, chosen, fallbackRank) {
+  BOTS.forEach((b) => BOT_LABELS.set(b.bot_uuid, `${b.name} (${b.player})`));
+  const known = chosen && (BOT_LABELS.has(chosen) || BOTS.some((b) => b.bot_uuid === chosen));
+  const value = known ? chosen : (BOTS[fallbackRank] || BOTS[0]).bot_uuid;
+  const options = BOTS.map((b) =>
+    `<option value="${b.bot_uuid}">${esc(BOT_LABELS.get(b.bot_uuid))}</option>`);
+  if (!BOTS.some((b) => b.bot_uuid === value)) {
+    // Off the board right now — keep it selectable rather than dropping the reader
+    // somewhere else, and say why it looks frozen.
+    options.unshift(
+      `<option value="${value}">${esc(BOT_LABELS.get(value) || "selected bot")} — off board</option>`);
+  }
+  // paint() skips the rewrite when the list is unchanged, so an open dropdown survives.
+  if (paint(sel, options.join("")) || sel.value !== value) sel.value = value;
+  return value;
 }
 
 function setTab(name) {
@@ -121,13 +138,14 @@ function setTab(name) {
   document.querySelectorAll(".tabs button").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
   ["leaderboard", "bot", "compare"].forEach((t) => { el("tab-" + t).hidden = t !== name; });
-  if (name === "bot" && el("botSelect").value) showBot(el("botSelect").value);
-  if (name === "compare") renderCompare(el("cmpA").value, el("cmpB").value);
+  if (name === "bot" && PICKED.bot) showBot(PICKED.bot);
+  if (name === "compare") renderCompare(PICKED.a, PICKED.b);
 }
 
 function openBot(uuid) {
+  PICKED.bot = uuid;
   setTab("bot");
-  el("botSelect").value = uuid;
+  if (BOTS.length) fillSelect(el("botSelect"), uuid, 0);
   showBot(uuid);
 }
 
@@ -156,6 +174,7 @@ async function showBot(uuid) {
     paint(box, `<span class="muted">could not load this bot: ${esc(e.message)}</span>`);
     return;
   }
+  BOT_LABELS.set(uuid, `${d.name} (${d.player})`);   // may never have been on the board
   if (box.dataset.bot !== uuid) {
     // New bot: lay down a fixed skeleton once. Everything below repaints into it piece
     // by piece, so a poll that only moves the win rate leaves the game log — and any
