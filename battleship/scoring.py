@@ -77,7 +77,9 @@ def _bot_window(conn, bot_uuid, window):
 
 
 def _games_played(conn, bot_uuid):
-    """Every game this bot has played, window or no window — both index counts."""
+    """Every game this bot has played, window or no window. Two index range counts, which
+    measured faster than one grouped pass over both indexes (36ms vs 54ms on a 128k-game
+    DB) — this is the only part of the board that still grows with history."""
     return conn.execute(
         "SELECT (SELECT COUNT(*) FROM games WHERE a_bot_uuid = :bot) "
         "     + (SELECT COUNT(*) FROM games WHERE b_bot_uuid = :bot)",
@@ -95,8 +97,56 @@ def _percentiles(pairs, higher_better):
     return {bot: 1.0 - i / (n - 1) for i, (bot, _) in enumerate(ordered)}
 
 
+def h2h_scores(conn, contenders, window=cfg.H2H_GAMES):
+    """Head-to-head score per bot: how many of `contenders` it out-solves.
+
+    Every pair that met inside the last `window` games is judged on mean solve time over
+    just those games — the faster bot takes the pair. A bot's score is the number of
+    contenders it beats, so it reads as "beats N of the field" rather than as an average
+    that a weak opponent can inflate. This window is global, not per bot: a pair is only
+    comparable over games the two actually played together.
+
+    Returns {bot_uuid: {"score", "pairs", "beats", "solve_avg"}}, where `pairs` counts
+    the judged pairs and `beats` lists the opponents taken.
+    """
+    contenders = set(contenders)
+    # Directed group-by, then merged per unordered pair: the same two bots swap seats
+    # from game to game, so each pair arrives as two rows.
+    totals = {}      # (pair, bot) -> [sum of solved rounds, games solved]
+    for r in conn.execute("""
+        SELECT a_bot_uuid AS x, b_bot_uuid AS y,
+               SUM(a_solved_round) AS x_sum, COUNT(a_solved_round) AS x_n,
+               SUM(b_solved_round) AS y_sum, COUNT(b_solved_round) AS y_n
+        FROM (SELECT * FROM games ORDER BY seq DESC LIMIT :window)
+        GROUP BY a_bot_uuid, b_bot_uuid
+    """, {"window": window}):
+        pair = tuple(sorted((r["x"], r["y"])))
+        for bot, total, n in ((r["x"], r["x_sum"], r["x_n"]), (r["y"], r["y_sum"], r["y_n"])):
+            acc = totals.setdefault((pair, bot), [0, 0])
+            acc[0] += total or 0
+            acc[1] += n or 0
+
+    out = {b: {"score": 0, "pairs": 0, "beats": [], "solve_avg": None} for b in contenders}
+    seen = {pair for pair, _bot in totals}
+    for pair in seen:
+        x, y = pair
+        xs, ys = totals.get((pair, x)), totals.get((pair, y))
+        # A side that never solved has no time to compare, so the pair goes unjudged.
+        if not xs or not ys or not xs[1] or not ys[1]:
+            continue
+        x_avg, y_avg = xs[0] / xs[1], ys[0] / ys[1]
+        for me, mine, opp, theirs in ((x, x_avg, y, y_avg), (y, y_avg, x, x_avg)):
+            if me not in out or opp not in contenders:
+                continue
+            out[me]["pairs"] += 1
+            if mine < theirs:                    # fewer turns to solve wins the pair
+                out[me]["score"] += 1
+                out[me]["beats"].append(opp)
+    return out
+
+
 def rankings(conn, active=frozenset(), window=cfg.LEADERBOARD_GAMES,
-             idle_sec=cfg.LEADERBOARD_IDLE_SEC, now=None):
+             idle_sec=cfg.LEADERBOARD_IDLE_SEC, now=None, h2h_window=cfg.H2H_GAMES):
     """Per-bot leaderboard rows, best first.
 
     Each bot is scored over its own last `window` games (None = its whole record), so a
@@ -125,6 +175,15 @@ def rankings(conn, active=frozenset(), window=cfg.LEADERBOARD_GAMES,
         # so the board can show both without the window looking like a stalled counter.
         b["total_games"] = _games_played(conn, m["uuid"])
         bots.append(b)
+
+    # Head-to-head score, judged only among the bots on the board — a pair against a bot
+    # that has left says nothing about how this one is doing against the current field.
+    h2h = h2h_scores(conn, [b["bot"] for b in bots], h2h_window)
+    for b in bots:
+        h = h2h.get(b["bot"], {})
+        b["h2h_score"] = h.get("score", 0)
+        b["h2h_pairs"] = h.get("pairs", 0)
+        b["h2h_beats"] = h.get("beats", [])
 
     # Combined = mean of the (up to three) per-competition percentile ranks.
     wr = _percentiles([(b["bot"], b["win_rate"]) for b in bots], True)
