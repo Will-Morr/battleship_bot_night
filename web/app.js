@@ -252,11 +252,15 @@ async function showGame(gameUuid, botUuid) {
         ${boardBlock(g, g.opponent, g.you)}
       </div>
       <div class="legend">
-        <span><svg class="swship" viewBox="0 0 3 1"><line x1=".5" y1=".5" x2="2.5" y2=".5"/>
-          <circle cx=".5" cy=".5" r=".3"/><circle cx="1.5" cy=".5" r=".3"/>
-          <circle cx="2.5" cy=".5" r=".3"/></svg>ship</span><span><i class="sw miss"></i>miss</span>
-        <span><i class="sw hit"></i>hit</span><span><i class="sw sunk"></i>sunk</span>
-        <span class="muted">numbers are the order that side's shots were fired</span>
+        <span><svg class="swship" viewBox="0 0 3 1"><g class="halo"><line x1=".5" y1=".5" x2="2.5" y2=".5"/>
+          <circle cx=".5" cy=".5" r=".3"/><circle cx="1.5" cy=".5" r=".3"/><circle cx="2.5" cy=".5" r=".3"/></g>
+          <g class="ink"><line x1=".5" y1=".5" x2="2.5" y2=".5"/><circle cx=".5" cy=".5" r=".3"/>
+          <circle cx="1.5" cy=".5" r=".3"/><circle cx="2.5" cy=".5" r=".3"/></g></svg>ship</span>
+        <span><i class="sw" style="${swatch("miss")}"></i>miss</span>
+        <span><i class="sw" style="${swatch("first")}"></i>first hit on a ship</span>
+        <span><i class="sw" style="${swatch("follow")}"></i>follow-up hit</span>
+        <span><i class="sw ramp"></i>early → late</span>
+        <span class="muted">numbers are the order that side's shots were fired; bold sank a ship</span>
       </div>
     </div>`);
 }
@@ -285,19 +289,48 @@ function shipCells(layout, fleet) {
   return cells;
 }
 
+// Shot colours: hue, saturation, and the lightness walked from the first guess to the
+// last, so within one family early shots read pale and late shots deep.
+const SHOT_COLOR = {
+  miss:   { h: 197, s: 62, l0: 76, l1: 42 },   // light blue
+  first:  { h: 358, s: 70, l0: 66, l1: 34 },   // red — the shot that found a ship
+  follow: { h: 28, s: 88, l0: 68, l1: 38 },    // orange — hits on an already-found ship
+};
+
+function shotStyle(kind, f) {
+  const c = SHOT_COLOR[kind];
+  const l = c.l0 + (c.l1 - c.l0) * (f || 0);
+  // Flip the number to dark ink on the pale end so early guesses stay readable.
+  return `background:hsl(${c.h} ${c.s}% ${l.toFixed(1)}%);color:${l > 54 ? "#0b1020" : "#fff"}`;
+}
+
+const swatch = (kind) => shotStyle(kind, 0.35);
+
 function miniBoard(rows, cols, layout, fleet, shots) {
   const ships = shipCells(layout, fleet);
   const fired = new Map();
-  (shots || []).forEach((s, i) => fired.set(s.row + "," + s.col, { n: i + 1, ...s }));
+  const struck = new Set();     // ships already found, so later hits on them are follow-ups
+  (shots || []).forEach((s, i) => {
+    const ship = ships.get(s.row + "," + s.col);
+    let kind = "miss";
+    if (s.result !== "miss") {
+      kind = ship && struck.has(ship) ? "follow" : "first";
+      if (ship) struck.add(ship);
+    }
+    fired.set(s.row + "," + s.col, { n: i + 1, kind, ...s });
+  });
+  const span = Math.max(1, (shots || []).length - 1);
   let cells = "";
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const key = r + "," + c;
       const s = fired.get(key);
       const ship = ships.get(key);
-      const cls = [ship ? "ship" : "", s ? s.result : ""].filter(Boolean).join(" ");
+      const cls = [ship ? "ship" : "", s ? s.result : "", s ? s.kind : ""].filter(Boolean).join(" ");
+      const style = s ? shotStyle(s.kind, (s.n - 1) / span) : "";
       const tip = `${key}${ship ? " " + ship : ""}${s ? ` — shot #${s.n}, round ${s.round}, ${s.result}` : ""}`;
-      cells += `<div class="c ${cls}" title="${esc(tip)}">${s ? s.n : ""}</div>`;
+      const label = s ? (s.sunk_ship ? `<b>${s.n}</b>` : s.n) : "";
+      cells += `<div class="c ${cls}" style="${style}" title="${esc(tip)}">${label}</div>`;
     }
   }
   // Ships are drawn as an overlay so they read as hulls across cells rather than as a
@@ -322,7 +355,12 @@ function shipMarks(rows, cols, layout, fleet) {
     }
     return out;
   }).join("");
-  return marks ? `<svg class="ships" viewBox="0 0 ${cols} ${rows}">${marks}</svg>` : "";
+  // Drawn twice: a dark halo underneath so the white hull stays legible on the pale end
+  // of the shot ramp, and on empty water where the cell is nearly black.
+  return marks
+    ? `<svg class="ships" viewBox="0 0 ${cols} ${rows}">
+         <g class="halo">${marks}</g><g class="ink">${marks}</g></svg>`
+    : "";
 }
 
 const clock = (ts) => (ts == null ? "–" : new Date(ts * 1000).toLocaleTimeString());
