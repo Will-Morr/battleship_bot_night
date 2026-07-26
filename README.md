@@ -1,5 +1,7 @@
 # Battleship Bot Tournament
 
+**Vibe Code Warning for this whole repo**
+
 A real-time, continuous Battleship tournament for bot game night. Players write bots and
 deploy them live; the server runs back-to-back **tourneys** (batches of games), and a
 projector shows the rankings update in real time.
