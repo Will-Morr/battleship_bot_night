@@ -26,12 +26,36 @@ function paint(node, html) {
 }
 
 // Live updates: refresh on any server-sent event, plus a slow fallback poll.
+//
+// One refresh in flight at a time. A refresh is several API calls, and when the server
+// is loaded they can outlast the timer — without this guard each tab queues refreshes
+// faster than it drains them, so a slow server gets slower the more tabs are watching.
+// A trigger arriving mid-refresh sets a flag and runs exactly one more pass afterwards,
+// so bursts of events collapse instead of stacking.
+const FALLBACK_POLL_MS = 30000;
+
 function subscribe(refresh) {
-  refresh();
+  let running = false;
+  let pending = false;
+  async function guarded() {
+    if (running) { pending = true; return; }
+    running = true;
+    try {
+      await refresh();
+    } catch (e) {
+      // Swallow: a failed poll must not kill the subscription.
+    } finally {
+      running = false;
+      if (pending) { pending = false; guarded(); }
+    }
+  }
+  guarded();
   try {
-    new EventSource("/events").onmessage = () => refresh();
+    new EventSource("/events").onmessage = () => guarded();
   } catch (e) { /* fall back to polling only */ }
-  setInterval(refresh, 4000);
+  // The SSE stream carries the real updates; this is only a safety net for a dropped
+  // connection, so it no longer needs to be aggressive.
+  setInterval(guarded, FALLBACK_POLL_MS);
 }
 
 // Bucket a {round: count} histogram into 10-round bins (0-9, ..., 90-99, 100).
@@ -226,7 +250,7 @@ async function renderRecent(botUuid) {
           <td>${g.opponent_solved_round == null ? "–" : g.opponent_solved_round}</td>
           <td class="l muted">${esc(g.end_reason || "")}</td>
         </tr>`).join("")}</tbody></table>`);
-  if (OPEN_GAME) showGame(OPEN_GAME, botUuid);   // survive the 4s auto-refresh
+  if (OPEN_GAME) showGame(OPEN_GAME, botUuid);   // survive the auto-refresh
 }
 
 function openGame(gameUuid, botUuid) {

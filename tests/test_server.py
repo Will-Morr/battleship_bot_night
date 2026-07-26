@@ -163,3 +163,51 @@ def test_server_end_to_end(tmp_path):
         assert moves > 0
     finally:
         conn.close()
+
+
+def test_analytics_cache_serves_one_query_per_change(tmp_path):
+    """The UI re-fetches rankings from every open tab on a timer, but the answer only
+    moves at tourney boundaries. Repeat requests must not re-query, concurrent ones must
+    coalesce into a single query, and a data change must invalidate."""
+    async def main():
+        server = Server(str(tmp_path / "c.db"), zmq_port=free_port(),
+                        http_port=free_port())
+        calls = []
+
+        def fn(_conn):
+            calls.append(1)
+            return {"n": len(calls)}
+
+        first = await server._cached("k", fn)
+        assert first == {"n": 1}
+        assert await server._cached("k", fn) == {"n": 1}      # cache hit, no re-query
+        assert len(calls) == 1
+
+        # Concurrent callers on a cold key share one query rather than stampeding it.
+        server._data_changed()
+        together = await asyncio.gather(*(server._cached("k", fn) for _ in range(8)))
+        assert together == [{"n": 2}] * 8
+        assert len(calls) == 2
+
+        # A data change invalidates; a different key is independent.
+        server._data_changed()
+        assert await server._cached("k", fn) == {"n": 3}
+        assert await server._cached("other", fn) == {"n": 4}
+        assert len(calls) == 4
+
+        # A failing read is not cached: the next request retries.
+        def boom(_conn):
+            raise RuntimeError("read failed")
+
+        server._data_changed()
+        for _ in range(2):
+            try:
+                await server._cached("k", boom)
+            except RuntimeError:
+                pass
+        assert await server._cached("k", fn) == {"n": 5}
+
+        server.writer.shutdown(wait=False)
+        server.db.close()
+
+    asyncio.run(main())

@@ -128,6 +128,8 @@ class Server:
         self._max_ping_misses = 3
         self._sse_clients = set()   # asyncio.Queue per connected SSE viewer
         self._bg_writes = set()     # in-flight fire-and-forget writes (GC anchor)
+        self._cache = {}            # analytics key -> (data_version, in-flight Task)
+        self._data_version = 0      # bumped whenever cached answers could change
         self.running = False
 
     def _active_bot_uuids(self):
@@ -215,6 +217,7 @@ class Server:
         session = Session(session_uuid, identity, bot_uuid, player, bot)
         self.sessions[session_uuid] = session
         self.by_identity[identity] = session_uuid
+        self._data_changed()        # `active` flags in rankings/bots just moved
         await self.send(identity, p.msg(p.REGISTERED, uuid=session_uuid, bot_uuid=bot_uuid,
                                         config=self.config))
         log(f"connected: {player}/{bot} ({len(self.sessions)} bot(s) online)")
@@ -225,6 +228,7 @@ class Server:
             return
         session.alive = False
         self.by_identity.pop(session.identity, None)
+        self._data_changed()        # `active` flags in rankings/bots just moved
         now = time.time()
         self._write_soon(lambda db: db.close_session(session_uuid, now))
 
@@ -309,6 +313,7 @@ class Server:
         for s in participants:
             await self.send(s.identity, p.msg(p.TOURNEY_START, tourney_id=wire_id))
 
+        self._data_changed()
         self._broadcast({"type": "tourney_start", "tourney_id": wire_id})
         roster = ", ".join(sorted(f"{s.player}/{s.bot_name}" for s in participants))
         log(f"tourney #{wire_id} start: {len(participants)} bots [{roster}]")
@@ -328,6 +333,7 @@ class Server:
         for s in participants:
             if s.uuid in self.sessions:
                 await self.send(s.identity, p.msg(p.TOURNEY_END, tourney_id=wire_id))
+        self._data_changed()
         self._broadcast({"type": "tourney_end", "tourney_id": wire_id,
                          "games": engine.num_games})
 
@@ -357,6 +363,31 @@ class Server:
             app.router.add_static("/static/", WEB_DIR)
         return app
 
+    def _data_changed(self):
+        """Mark every cached analytics payload stale. Called wherever the numbers the
+        API reports can move: tourney boundaries and session come-and-go."""
+        self._data_version += 1
+
+    async def _cached(self, key, fn):
+        """Memoize an analytics read until the data changes.
+
+        The web UI re-fetches rankings and pairings on a timer from every open tab, but
+        the answers only move at tourney boundaries (~20s). This serves one query per
+        change instead of one per request, and — because the entry is the in-flight Task
+        — concurrent callers for the same key await a single query rather than stampeding
+        it. On failure the entry is dropped so the next request retries."""
+        version = self._data_version
+        entry = self._cache.get(key)
+        if entry is None or entry[0] != version:
+            entry = (version, asyncio.create_task(self._read(fn)))
+            self._cache[key] = entry
+        try:
+            return await entry[1]
+        except Exception:
+            if self._cache.get(key) is entry:
+                del self._cache[key]
+            raise
+
     async def _read(self, fn):
         """Run a read query on a throwaway read-only connection off the event loop."""
         return await asyncio.to_thread(self._read_blocking, fn)
@@ -379,20 +410,22 @@ class Server:
 
     async def _h_rankings(self, request):
         active = self._active_bot_uuids()
-        return web.json_response(await self._read(lambda c: scoring.rankings(c, active)))
+        return web.json_response(
+            await self._cached("rankings", lambda c: scoring.rankings(c, active)))
 
     async def _h_bots(self, request):
         active = self._active_bot_uuids()
-        rows = await self._read(lambda c: [dict(r) for r in c.execute(
+        rows = await self._cached("bots", lambda c: [dict(r) for r in c.execute(
             "SELECT uuid, player, name, first_tourney_uuid, last_tourney_uuid, "
             "first_seen_at, last_seen_at FROM bots ORDER BY player, name")])
-        for r in rows:
-            r["active"] = r["uuid"] in active
+        # Copy before annotating: the cached list is shared with every other caller.
+        rows = [dict(r, active=r["uuid"] in active) for r in rows]
         return web.json_response(rows)
 
     async def _h_bot(self, request):
         uuid = request.match_info["uuid"]
-        return web.json_response(await self._read(lambda c: scoring.bot_detail(c, uuid)))
+        return web.json_response(
+            await self._cached(("bot", uuid), lambda c: scoring.bot_detail(c, uuid)))
 
     async def _h_bot_games(self, request):
         uuid = request.match_info["uuid"]
@@ -401,7 +434,8 @@ class Server:
         except ValueError:
             return web.json_response({"error": "limit must be an integer"}, status=400)
         return web.json_response(
-            await self._read(lambda c: scoring.recent_games(c, uuid, limit)))
+            await self._cached(("games", uuid, limit),
+                               lambda c: scoring.recent_games(c, uuid, limit)))
 
     async def _h_bot_heatmap(self, request):
         uuid = request.match_info["uuid"]
@@ -412,7 +446,8 @@ class Server:
         except ValueError:
             return web.json_response({"error": "games must be an integer"}, status=400)
         return web.json_response(
-            await self._read(lambda c: scoring.heatmap(c, uuid, vs, games)))
+            await self._cached(("heatmap", uuid, vs, games),
+                               lambda c: scoring.heatmap(c, uuid, vs, games)))
 
     async def _h_game(self, request):
         uuid = request.match_info["uuid"]
@@ -427,13 +462,14 @@ class Server:
         a, b = request.query.get("a"), request.query.get("b")
         if not a or not b:
             return web.json_response({"error": "need ?a= and ?b= bot uuids"}, status=400)
-        return web.json_response(await self._read(lambda c: scoring.head_to_head(c, a, b)))
+        return web.json_response(
+            await self._cached(("compare", a, b), lambda c: scoring.head_to_head(c, a, b)))
 
     async def _h_pairings(self, request):
-        return web.json_response(await self._read(scoring.pairings))
+        return web.json_response(await self._cached("pairings", scoring.pairings))
 
     async def _h_tourneys(self, request):
-        rows = await self._read(lambda c: [dict(r) for r in c.execute(
+        rows = await self._cached("tourneys", lambda c: [dict(r) for r in c.execute(
             "SELECT uuid, started_at, ended_at, status, num_games FROM tourneys "
             "ORDER BY seq DESC LIMIT 100")])
         return web.json_response(rows)
