@@ -125,6 +125,7 @@ class Server:
         self._ping_window = 0.15
         self._max_ping_misses = 3
         self._sse_clients = set()   # asyncio.Queue per connected SSE viewer
+        self._bg_writes = set()     # in-flight fire-and-forget writes (GC anchor)
         self.running = False
 
     def _active_bot_uuids(self):
@@ -132,9 +133,15 @@ class Server:
 
     # -- write/read plumbing ----------------------------------------------------
 
-    def _write(self, fn):
-        """Run a DB write on the single writer thread. Returns an awaitable."""
-        return asyncio.get_running_loop().run_in_executor(self.writer, fn, self.db)
+    async def _write(self, fn):
+        """Run a DB write on the single writer thread."""
+        return await asyncio.get_running_loop().run_in_executor(self.writer, fn, self.db)
+
+    def _write_soon(self, fn):
+        """Fire-and-forget a DB write; keeps a reference so the task isn't GC'd."""
+        task = asyncio.create_task(self._write(fn))
+        self._bg_writes.add(task)
+        task.add_done_callback(self._bg_writes.discard)
 
     async def send(self, identity, message):
         await self.router.send_multipart([identity, p.encode(message)])
@@ -217,7 +224,7 @@ class Server:
         session.alive = False
         self.by_identity.pop(session.identity, None)
         now = time.time()
-        asyncio.create_task(self._write(lambda db: db.close_session(session_uuid, now)))
+        self._write_soon(lambda db: db.close_session(session_uuid, now))
 
     # -- batched exchange (used by ZmqDispatcher) -------------------------------
 
