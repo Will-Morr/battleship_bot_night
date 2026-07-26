@@ -78,9 +78,31 @@ and `ordered_bot.py`. (A functional form — module-level `place_ships(config)` 
 python test/test_bot.py bots/random_bot.py --games 200
 ```
 
-Runs your bot against both example bots locally (no server) and prints win-rate / solver
-/ layout and a forfeit count — **forfeits should be 0**. (There is also a `test-bot`
-skill that wraps this.)
+Runs your bot against both example bots in-process (no server, no network) and prints
+exact results: W-T-L and win%, the full solver and layout distributions (avg / median /
+min / max / sd), your own compute time per move, and **every fault** — each crash,
+illegal move, and illegal layout named with its round and reason. Faults should be 0;
+each one is a game lost live.
+
+Debug a bot without ever starting a server:
+
+```bash
+python test/test_bot.py mybot.py --debug debug/     # replays + heatmaps
+```
+
+`debug/` gets `index.html` (open it), `summary.txt`, `games.csv` with one row per game,
+`faults/` with a full replay of every faulted game (traceback, the `view` your bot was
+answering, both boards, the move log), and `heatmaps/` — where your ships sit, where you
+shoot, in what order, and where you hit — as `.svg` and as ascii `.txt`.
+
+Every game is seeded from `(seed, opponent, game index)`, so any game the report
+mentions replays on its own:
+
+```bash
+python test/test_bot.py mybot.py --opponent random --game 17 --seed 1
+```
+
+(There is also a `test-bot` skill that wraps all this.)
 
 ## Deploy a bot (live)
 
@@ -131,7 +153,7 @@ cursor.
 ```
 battleship/     server, runner, and shared logic (game rules, protocol, db, scoring)
 bots/           the two example bots (also templates)
-test/           test_bot.py — local bot tester
+test/           test_bot.py — local bot tester (+ debug_report.py, its output)
 tests/          pytest suite
 web/            projector + stats site (static, no build step)
 ```
