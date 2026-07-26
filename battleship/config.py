@@ -30,7 +30,7 @@ BLACKOUT_GRACE = 1                # consecutive full blackouts tolerated before 
 # improved, and a late joiner is judged on the same sample size as everyone else. A bot
 # with no game in IDLE_SEC drops off unless it still has a live session. Per-bot detail
 # and head-to-head still cover the full record.
-LEADERBOARD_GAMES = 500           # games per bot the board is scored on (None = all)
+LEADERBOARD_GAMES = 1000          # games per bot the board is scored on (None = all)
 LEADERBOARD_IDLE_SEC = 15 * 60    # hide a bot idle this long (0 = never hide)
 
 # Tourney sizing / cadence.
