@@ -274,35 +274,56 @@ async function showGame(gameUuid, botUuid) {
 
 // -- heatmaps ----------------------------------------------------------------
 
-// A count grid drawn as a board: intensity is the count against the busiest cell, so
-// the shape of a bot's habits reads at a glance rather than the absolute numbers.
-function heatGrid(counts, kind, unit) {
+// Perceptually uniform colormaps, so equal steps in count look like equal steps in
+// colour — an alpha ramp on one hue crushes everything above the midpoint together.
+// Inferno for guesses, viridis for ships: both readable on a dark page, and distinct
+// enough that the two maps can never be mistaken for each other.
+const RAMPS = {
+  inferno: ["#000004", "#1b0c41", "#4a0c6b", "#781c6d", "#a52c60",
+            "#cf4446", "#ed6925", "#fb9b06", "#fcffa4"],
+  viridis: ["#0d0333", "#251a58", "#3b528b", "#2c728e", "#21918c",
+            "#28ae80", "#5ec962", "#addc30", "#fde725"],
+};
+
+function rampColor(stops, t) {
+  const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  const f = x - i;
+  const hex = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
+  const [r1, g1, b1] = hex(stops[i]), [r2, g2, b2] = hex(stops[i + 1]);
+  const mix = (a, b) => Math.round(a + (b - a) * f);
+  return `rgb(${mix(r1, r2)},${mix(g1, g2)},${mix(b1, b2)})`;
+}
+
+// A count grid drawn as a board, coloured 0..busiest so the shape of a bot's habits
+// reads at a glance. The strip below decodes the scale.
+function heatGrid(counts, ramp, unit) {
   const rows = counts.length, cols = counts[0] ? counts[0].length : 0;
+  const stops = RAMPS[ramp];
   const max = Math.max(1, ...counts.map((r) => Math.max(...r)));
-  const rgb = kind === "ships" ? "77,163,255" : "251,146,60";
   let cells = "";
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const v = counts[r][c];
-      // Floor the alpha on any non-zero cell so a single visit still shows.
-      const a = v ? 0.12 + 0.88 * (v / max) : 0;
-      cells += `<div class="c" style="background:rgba(${rgb},${a.toFixed(3)})"
+      cells += `<div class="c" style="background:${rampColor(stops, v / max)}"
         title="${r},${c} — ${v} ${unit}"></div>`;
     }
   }
+  const bar = stops.map((s, i) => `${s} ${(i / (stops.length - 1) * 100).toFixed(0)}%`).join(",");
   return `<div class="mini heat" style="--cols:${cols}">${cells}</div>
-    <div class="axis"><span>0</span><span>busiest cell: ${max} ${unit}</span></div>`;
+    <div class="ramp" style="background:linear-gradient(90deg,${bar})"></div>
+    <div class="axis"><span>0</span><span>${max} ${unit}</span></div>`;
 }
 
 function heatPair(h, title) {
   if (!h || !h.games) return `<div class="muted">${esc(title)}: no games yet</div>`;
   return `<div>
       <div class="muted">${esc(title)} — ship placement <span class="muted">(${h.games} games)</span></div>
-      ${heatGrid(h.ships, "ships", "games")}
+      ${heatGrid(h.ships, "viridis", "games")}
     </div>
     <div>
       <div class="muted">${esc(title)} — guesses <span class="muted">(${h.total_shots.toLocaleString()} shots)</span></div>
-      ${heatGrid(h.shots, "shots", "shots")}
+      ${heatGrid(h.shots, "inferno", "shots")}
     </div>`;
 }
 
