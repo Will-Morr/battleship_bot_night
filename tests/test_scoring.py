@@ -38,6 +38,34 @@ def seeded(tmp_path):
     return d, {"p1": p1[0], "p2": p2[0], "p3": p3[0]}
 
 
+def test_both_forfeit_game_scores_without_credit(tmp_path):
+    # A game both sides forfeited stores winner NULL, and `winner='a'` is NULL (not 0)
+    # in SQL — leaving `win`/`tie` as None and blowing up per-bot detail (a 500 on
+    # /api/bot/<uuid>, i.e. a blank single-bot panel). Neither side gets credit.
+    d = Database(tmp_path / "s.db")
+    p1, p2 = reg(d, "p1"), reg(d, "p2")
+    t = db.new_uuid()
+    d.start_tourney(t, {}, 1.0)
+    d.record_games([
+        game(t, p1, p2, winner="a", ao="win", bo="loss", asr=30, bsr=40),
+        game(t, p1, p2, winner=None, ao="forfeit", bo="forfeit", asr=None, bsr=None,
+             end="both_forfeit"),
+    ])
+
+    detail = scoring.bot_detail(d.conn, p1[0])
+    assert detail["games"] == 2 and detail["wins"] == 1 and detail["ties"] == 0
+    assert detail["win_rate"] == 0.5
+    assert detail["opponents"][0]["games"] == 2
+    assert detail["opponents"][0]["win_rate"] == 0.5
+
+    board = {b["bot_uuid"]: b for b in scoring.rankings(d.conn)}
+    assert board[p1[0]]["wins"] == 1 and board[p1[0]]["win_rate"] == 0.5
+    assert board[p2[0]]["wins"] == 0 and board[p2[0]]["win_rate"] == 0.0
+
+    h2h = scoring.head_to_head(d.conn, p1[0], p2[0])
+    assert h2h["games"] == 2 and h2h["a_wins"] == 1 and h2h["ties"] == 0
+
+
 def test_rankings_metrics(tmp_path):
     d, ids = seeded(tmp_path)
     board = {b["bot_uuid"]: b for b in scoring.rankings(d.conn)}

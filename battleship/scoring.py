@@ -9,14 +9,17 @@ import math
 import statistics
 
 # One row per (bot, game) with that bot's perspective of the result.
+# A both-forfeit game has winner NULL (DATA_CONTRACTS.md §6), and `winner='a'` on NULL is
+# NULL, not 0 — so COALESCE every flag to keep `win`/`tie` plain 0/1 ints. Neither side
+# gets credit for such a game, which is the intended scoring.
 _PERSPECTIVES = """
 SELECT a_bot_uuid AS bot, b_bot_uuid AS opp,
-       (winner='a') AS win, (winner='tie') AS tie,
+       COALESCE(winner='a', 0) AS win, COALESCE(winner='tie', 0) AS tie,
        a_solved_round AS solver, b_solved_round AS opp_solver, a_outcome AS outcome
 FROM games
 UNION ALL
 SELECT b_bot_uuid, a_bot_uuid,
-       (winner='b'), (winner='tie'),
+       COALESCE(winner='b', 0), COALESCE(winner='tie', 0),
        b_solved_round, a_solved_round, b_outcome
 FROM games
 """

@@ -128,8 +128,15 @@ function renderRankings(rows) {
 }
 
 async function showBot(uuid) {
-  const d = await getJSON("/api/bot/" + uuid);
   const box = el("detail");
+  let d;
+  try {
+    d = await getJSON("/api/bot/" + uuid);
+  } catch (e) {
+    // Say so rather than leaving an empty panel that looks like a dead page.
+    box.innerHTML = `<span class="muted">could not load this bot: ${esc(e.message)}</span>`;
+    return;
+  }
   box.dataset.bot = uuid;
   const opps = d.opponents.map((o) => `<tr class="clickable" onclick="openBot('${o.bot_uuid}')">
     <td class="l">${esc(o.name)} <span class="muted">${esc(o.player)}</span></td>
