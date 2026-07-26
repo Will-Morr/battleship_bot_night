@@ -58,6 +58,11 @@ function initProjector() {
   async function refresh() {
     const rows = await getJSON("/api/rankings");
     const active = rows.filter((r) => r.active).length;
+    if (!rows.length) {
+      paint(sub, "waiting for bots — none has played in the last 15 minutes");
+      paint(body, '<tr><td class="l">no active bots</td></tr>');
+      return;
+    }
     paint(sub, `<span class="dot"></span>live &middot; ${rows.length} bots &middot; ${active} active`);
     paint(body, rows.map((r, i) => {
       const top = i < 3 ? ` top${i + 1}` : "";
@@ -150,6 +155,13 @@ function openBot(uuid) {
 }
 
 function renderRankings(rows) {
+  if (!rows.length) {
+    // An empty board is a real state (every bot idle past the cutoff), and a bare table
+    // looks identical to a broken page — so say which it is.
+    paint(el("rankings"), '<tbody><tr><td class="muted">no bot has played in the last '
+      + '15 minutes — the board only lists bots that are still playing</td></tr></tbody>');
+    return;
+  }
   paint(el("rankings"), `
     <thead><tr><th>#</th><th class="l">bot</th><th class="l">player</th><th title="games scored (the bot's most recent 1000) / games it has played">scored / played</th>
       <th class="sorted">win% ↓</th>
