@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import random
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -32,6 +33,24 @@ from .tourney import TourneyEngine
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 
 RUNNER_VERSION = "1"
+
+
+def _lan_ip():
+    """Best-effort LAN address, so printed links work from other machines. No packets
+    are sent: connect() on a UDP socket just picks the outbound interface."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "localhost"
+    finally:
+        s.close()
+
+
+def log(message):
+    """One-line server log, wall-clock stamped so the console reads as a timeline."""
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
 class Session:
@@ -189,6 +208,7 @@ class Server:
         self.by_identity[identity] = session_uuid
         await self.send(identity, p.msg(p.REGISTERED, uuid=session_uuid, bot_uuid=bot_uuid,
                                         config=self.config))
+        log(f"connected: {player}/{bot} ({len(self.sessions)} bot(s) online)")
 
     def _retire(self, session_uuid, reason):
         session = self.sessions.pop(session_uuid, None)
@@ -281,6 +301,8 @@ class Server:
             await self.send(s.identity, p.msg(p.TOURNEY_START, tourney_id=wire_id))
 
         self._broadcast({"type": "tourney_start", "tourney_id": wire_id})
+        roster = ", ".join(sorted(f"{s.player}/{s.bot_name}" for s in participants))
+        log(f"tourney #{wire_id} start: {len(participants)} bots [{roster}]")
         engine = TourneyEngine(tourney_uuid, [s.as_participant() for s in participants],
                                self.config, self.target, self.rng,
                                blackout_grace=cfg.BLACKOUT_GRACE)
@@ -434,7 +456,10 @@ class Server:
         site = web.TCPSite(runner, "0.0.0.0", self.http_port)
         await site.start()
 
-        print(f"server: ZMQ tcp://*:{self.zmq_port}  HTTP http://0.0.0.0:{self.http_port}")
+        host = _lan_ip()
+        log(f"server: ZMQ tcp://{host}:{self.zmq_port}  HTTP http://{host}:{self.http_port}")
+        log(f"  web UI:  http://{host}:{self.http_port}/")
+        log(f"  API:     http://{host}:{self.http_port}/api/tourneys")
         try:
             await asyncio.gather(self._recv_loop(), self._tourney_loop())
         finally:
