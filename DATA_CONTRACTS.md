@@ -308,9 +308,12 @@ many millions of moves needs trimming. Kept as readable TEXT by default.
   histograms and per-opponent breakdown.
 - `GET /api/pairings` -> pairwise winrate/avg-score matrix over active bots.
 - `GET /api/tourneys` -> tourney list + status.
+- `GET /api/code/{code_hash}` -> `{code, code_filename, code_hash}` for one bot's source.
+  Sync payloads carry `code_hash` but blank the source, so this is how a mirror resolves
+  it: once per distinct bot, not once per poll.
 - `GET /events`      -> SSE: `tourney_start`, `game_complete`, `ranking_update`,
   `tourney_end` for the live projector.
-- `GET /sync?games=&moves=` -> incremental JSON of rows with `seq` greater than each
+- `GET /sync?games=&moves=&code=` -> incremental JSON of rows with `seq` greater than each
   per-table cursor. The sync client keeps a local SQLite mirror with this identical
   schema and advances cursors by max `seq` per table. **Paged**: at most 20k rows per
   table; the response carries `"more": true` when another page is waiting, and the
@@ -318,6 +321,13 @@ many millions of moves needs trimming. Kept as readable TEXT by default.
   `moves` reaches millions of rows within an evening, and one unpaged response
   materializes the table as dicts plus JSON (~1.3 KB peak RSS per row, i.e. multiple GB)
   and will OOM the server.
+  `bot_sessions.code` is sent as `""` unless `code=1`: the source never changes once
+  written, but the whole table ships on every poll, measured live at 856 KB of identical
+  source per request (2.9x duplicated across sessions) on polls carrying zero new rows,
+  and growing — every reconnect appends another session row. Every row still carries
+  `code_hash`, so fetch source from `/api/code/{code_hash}` instead. The blank is `""`
+  rather than an omitted key so mirrors created with `code TEXT NOT NULL` keep applying
+  payloads without a schema change.
 - `GET /db` -> one-shot download of a consistent snapshot (`VACUUM INTO`) of the DB. The
   snapshot is a full-size temporary copy, streamed and then deleted; expect the download
   to be as large as the live DB (GBs during a long event) and set a client timeout to

@@ -153,6 +153,10 @@ full-size copy, so allow a long timeout and verify the byte count against
 [`DATA_CONTRACTS.md` §4](DATA_CONTRACTS.md). Joins use `uuid` columns; `seq` is the sync
 cursor.
 
+Your mirror's `bot_sessions.code` is empty by design — shipping every bot's source on
+every poll cost ~856 KB per request and grew all evening. Each row keeps its `code_hash`,
+so fetch source once per bot from `GET /api/code/{code_hash}`.
+
 ## Repository layout
 
 ```

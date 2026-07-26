@@ -130,6 +130,31 @@ def test_sync_pages_and_never_returns_whole_table(tmp_path):
     assert d.sync_since(gc, mc, limit=10)["more"] is False
 
 
+def test_sync_omits_bot_source_by_default(tmp_path):
+    """Bot source never changes but shipped on every poll -- 856 KB per request live.
+    It is blanked by default and resolved via code_hash instead."""
+    d = make_db(tmp_path)
+    source = "print('x')\n" * 500
+    session = db.new_uuid()
+    d.register_session(player="a", bot_name="a", session_uuid=session, code=source,
+                       code_filename="a.py", code_hash="deadbeef", runner_version="1", now=1.0)
+
+    lean = d.sync_since()["bot_sessions"][0]
+    assert lean["code"] == ""                    # blanked, not omitted...
+    assert "code" in lean                        # ...so mirrors with NOT NULL still insert
+    assert lean["code_hash"] == "deadbeef"       # and the source stays addressable
+
+    fat = d.sync_since(include_code=True)["bot_sessions"][0]
+    assert fat["code"] == source                 # opt-in restores the old behaviour
+
+    assert d.code_by_hash("deadbeef")["code"] == source
+    assert d.code_by_hash("nosuchhash") is None
+
+    # The lean payload is the whole point: it must be dramatically smaller.
+    import json
+    assert len(json.dumps(lean)) * 10 < len(json.dumps(fat))
+
+
 def test_snapshot_is_readable(tmp_path):
     d = make_db(tmp_path)
     a_bot, a_sess = seed_bot(d, player="a", name="a")

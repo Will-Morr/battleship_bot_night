@@ -226,14 +226,33 @@ class Database:
         conn = conn or self.conn
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
-    def sync_since(self, games_cursor=0, moves_cursor=0, limit=SYNC_PAGE_ROWS, conn=None):
+    def code_by_hash(self, code_hash, conn=None):
+        """The bot source behind a `code_hash`, or None. Sessions sharing a hash share
+        the identical source, so one row answers for all of them."""
+        rows = self.query(
+            "SELECT code, code_filename, code_hash FROM bot_sessions WHERE code_hash=? LIMIT 1",
+            (code_hash,), conn)
+        return rows[0] if rows else None
+
+    def sync_since(self, games_cursor=0, moves_cursor=0, limit=SYNC_PAGE_ROWS, conn=None,
+                   include_code=False):
         """Incremental payload for a synced mirror. Small mutable tables (tourneys,
         bots, bot_sessions) are sent whole; the big append-only tables (games, moves)
         are sent by `seq` cursor, at most `limit` rows each. Returns rows, the new
         cursors to store, and `more`: True if another page is waiting, so a mirror
         starting from cursor 0 pages through instead of asking for the whole table
-        in one response (a full moves table is gigabytes once materialized)."""
+        in one response (a full moves table is gigabytes once materialized).
+
+        `bot_sessions.code` holds each bot's full source and never changes once written,
+        yet the whole table ships on every poll -- measured live at 856 KB of identical
+        source per request, 2.9x duplicated across sessions, on polls carrying zero new
+        games. It is blanked by default and fetched on demand via `code_by_hash`; pass
+        include_code=True for the old behaviour. `code_hash` still ships on every row,
+        so the source is always retrievable."""
         conn = conn or self.conn
+        sessions_cols = "*" if include_code else (
+            "seq, uuid, bot_uuid, '' AS code, code_filename, code_hash, runner_version, "
+            "registered_at, disconnected_at")
         games = self.query(
             "SELECT * FROM games WHERE seq>? ORDER BY seq LIMIT ?", (games_cursor, limit), conn)
         moves = self.query(
@@ -241,7 +260,8 @@ class Database:
         return {
             "tourneys": self.query("SELECT * FROM tourneys ORDER BY seq", (), conn),
             "bots": self.query("SELECT * FROM bots ORDER BY seq", (), conn),
-            "bot_sessions": self.query("SELECT * FROM bot_sessions ORDER BY seq", (), conn),
+            "bot_sessions": self.query(
+                f"SELECT {sessions_cols} FROM bot_sessions ORDER BY seq", (), conn),
             "games": games,
             "moves": moves,
             "cursors": {

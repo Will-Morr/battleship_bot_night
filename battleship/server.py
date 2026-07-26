@@ -350,6 +350,7 @@ class Server:
             web.get("/api/compare", self._h_compare),
             web.get("/api/pairings", self._h_pairings),
             web.get("/api/tourneys", self._h_tourneys),
+            web.get("/api/code/{code_hash}", self._h_code),
         ])
         if os.path.isdir(WEB_DIR):
             app.router.add_static("/static/", WEB_DIR)
@@ -459,15 +460,27 @@ class Server:
             moves = int(request.query.get("moves", 0))
         except ValueError:
             raise web.HTTPBadRequest(reason="games and moves must be integers")
-        data = await asyncio.to_thread(self._read_sync, games, moves)
+        include_code = request.query.get("code") == "1"
+        data = await asyncio.to_thread(self._read_sync, games, moves, include_code)
         return web.json_response(data)
 
-    def _read_sync(self, games_cursor, moves_cursor):
+    def _read_sync(self, games_cursor, moves_cursor, include_code=False):
         conn = connect(self.db.path, readonly=True)
         try:
-            return self.db.sync_since(games_cursor, moves_cursor, conn=conn)
+            return self.db.sync_since(games_cursor, moves_cursor, conn=conn,
+                                      include_code=include_code)
         finally:
             conn.close()
+
+    async def _h_code(self, request):
+        """One bot's source by content hash. Sync payloads carry `code_hash` but not the
+        source, so this is how a mirror resolves it -- once per distinct bot, not once
+        per poll."""
+        row = await self._read(
+            lambda conn: self.db.code_by_hash(request.match_info["code_hash"], conn))
+        if row is None:
+            raise web.HTTPNotFound(reason="unknown code_hash")
+        return web.json_response(row)
 
     async def _h_db(self, request):
         """Stream a consistent snapshot of the DB.
