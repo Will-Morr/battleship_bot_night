@@ -99,6 +99,37 @@ def test_incremental_sync(tmp_path):
     assert third["cursors"]["games"] > cur["games"]
 
 
+def test_sync_pages_and_never_returns_whole_table(tmp_path):
+    """A mirror starting at cursor 0 must page. An unbounded response buffers the whole
+    moves table into dicts + JSON, which is gigabytes on a real server."""
+    d = make_db(tmp_path)
+    a_bot, a_sess = seed_bot(d, player="a", name="a")
+    b_bot, b_sess = seed_bot(d, player="b", name="b")
+    t = db.new_uuid()
+    d.start_tourney(t, {}, now=1.0)
+    moves = [{"round": i, "side": "a", "row": 0, "col": i % 10, "result": "miss",
+              "sunk_ship": None, "response_ms": 1.0} for i in range(25)]
+    for _ in range(4):
+        d.record_games([make_game(t, a_bot, b_bot, a_sess, b_sess, moves)])
+
+    page = d.sync_since(limit=10)
+    assert len(page["moves"]) == 10 and page["more"] is True
+
+    # Paging to exhaustion yields every row exactly once, in seq order.
+    seen, gc, mc = [], 0, 0
+    while True:
+        page = d.sync_since(gc, mc, limit=10)
+        seen.extend(m["seq"] for m in page["moves"])
+        gc, mc = page["cursors"]["games"], page["cursors"]["moves"]
+        if not page["more"]:
+            break
+    assert seen == sorted(seen) == [r["seq"] for r in d.query("SELECT seq FROM moves ORDER BY seq")]
+    assert len(seen) == 100
+
+    # Caught up -> no more pages claimed.
+    assert d.sync_since(gc, mc, limit=10)["more"] is False
+
+
 def test_snapshot_is_readable(tmp_path):
     d = make_db(tmp_path)
     a_bot, a_sess = seed_bot(d, player="a", name="a")

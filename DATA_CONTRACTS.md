@@ -310,10 +310,19 @@ many millions of moves needs trimming. Kept as readable TEXT by default.
 - `GET /api/tourneys` -> tourney list + status.
 - `GET /events`      -> SSE: `tourney_start`, `game_complete`, `ranking_update`,
   `tourney_end` for the live projector.
-- `GET /sync?tourneys=&bots=&bot_sessions=&games=&moves=` -> incremental JSON of rows
-  with `seq` greater than each per-table cursor. The sync client keeps a local SQLite
-  mirror with this identical schema and advances cursors by max `seq` per table.
-- `GET /db` -> one-shot download of a consistent snapshot (`VACUUM INTO`) of the DB.
+- `GET /sync?games=&moves=` -> incremental JSON of rows with `seq` greater than each
+  per-table cursor. The sync client keeps a local SQLite mirror with this identical
+  schema and advances cursors by max `seq` per table. **Paged**: at most 20k rows per
+  table; the response carries `"more": true` when another page is waiting, and the
+  caller re-requests with the returned cursors until it is false. Never unbounded —
+  `moves` reaches millions of rows within an evening, and one unpaged response
+  materializes the table as dicts plus JSON (~1.3 KB peak RSS per row, i.e. multiple GB)
+  and will OOM the server.
+- `GET /db` -> one-shot download of a consistent snapshot (`VACUUM INTO`) of the DB. The
+  snapshot is a full-size temporary copy, streamed and then deleted; expect the download
+  to be as large as the live DB (GBs during a long event) and set a client timeout to
+  match. A truncated download still carries HTTP 200, so check `Content-Length` against
+  the bytes received before trusting the file.
 
 ---
 

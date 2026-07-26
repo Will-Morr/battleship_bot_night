@@ -13,6 +13,11 @@ import json
 import sqlite3
 import uuid as uuidlib
 
+# Rows per table per /sync response. A mirror pages until `more` is False. Bounded
+# because each row becomes a dict then JSON: ~1.3 KB of peak RSS per move row, so an
+# unbounded moves table (millions of rows) is several GB in a single request.
+SYNC_PAGE_ROWS = 20_000
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tourneys (
   seq INTEGER PRIMARY KEY,
@@ -221,13 +226,18 @@ class Database:
         conn = conn or self.conn
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
-    def sync_since(self, games_cursor=0, moves_cursor=0, conn=None):
+    def sync_since(self, games_cursor=0, moves_cursor=0, limit=SYNC_PAGE_ROWS, conn=None):
         """Incremental payload for a synced mirror. Small mutable tables (tourneys,
         bots, bot_sessions) are sent whole; the big append-only tables (games, moves)
-        are sent by `seq` cursor. Returns rows + the new cursors to store."""
+        are sent by `seq` cursor, at most `limit` rows each. Returns rows, the new
+        cursors to store, and `more`: True if another page is waiting, so a mirror
+        starting from cursor 0 pages through instead of asking for the whole table
+        in one response (a full moves table is gigabytes once materialized)."""
         conn = conn or self.conn
-        games = self.query("SELECT * FROM games WHERE seq>? ORDER BY seq", (games_cursor,), conn)
-        moves = self.query("SELECT * FROM moves WHERE seq>? ORDER BY seq", (moves_cursor,), conn)
+        games = self.query(
+            "SELECT * FROM games WHERE seq>? ORDER BY seq LIMIT ?", (games_cursor, limit), conn)
+        moves = self.query(
+            "SELECT * FROM moves WHERE seq>? ORDER BY seq LIMIT ?", (moves_cursor, limit), conn)
         return {
             "tourneys": self.query("SELECT * FROM tourneys ORDER BY seq", (), conn),
             "bots": self.query("SELECT * FROM bots ORDER BY seq", (), conn),
@@ -238,6 +248,7 @@ class Database:
                 "games": games[-1]["seq"] if games else games_cursor,
                 "moves": moves[-1]["seq"] if moves else moves_cursor,
             },
+            "more": len(games) == limit or len(moves) == limit,
         }
 
     def snapshot(self, dest_path):

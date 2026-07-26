@@ -144,7 +144,12 @@ itself so your analysis never adds load to the server:
 python -m battleship.sync_db --server <host>:8080 --db mirror.db     # syncs every 2s
 ```
 
-Then query `mirror.db` with any SQLite tool. One-shot full download: `GET /db`. Schema:
+The first sync pages through the full history (millions of moves — expect a couple of
+minutes), then each pull is incremental and near-instant.
+
+Then query `mirror.db` with any SQLite tool. One-shot full download: `GET /db` — a
+full-size copy, so allow a long timeout and verify the byte count against
+`Content-Length`. Schema:
 [`DATA_CONTRACTS.md` §4](DATA_CONTRACTS.md). Joins use `uuid` columns; `seq` is the sync
 cursor.
 

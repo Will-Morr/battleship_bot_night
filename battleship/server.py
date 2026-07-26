@@ -12,6 +12,7 @@ Concurrency model:
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -27,7 +28,7 @@ from aiohttp import web
 from . import config as cfg
 from . import protocol as p
 from . import scoring
-from .db import Database, connect, new_uuid
+from .db import SYNC_PAGE_ROWS, Database, connect, new_uuid
 from .tourney import TourneyEngine
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
@@ -117,6 +118,7 @@ class Server:
         self.snapshot_dir = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".",
                                          "snapshots")
         os.makedirs(self.snapshot_dir, exist_ok=True)
+        self._clear_snapshots()
 
         self.sessions = {}          # session_uuid -> Session
         self.by_identity = {}       # identity bytes -> session_uuid
@@ -452,8 +454,11 @@ class Server:
                 pass
 
     async def _h_sync(self, request):
-        games = int(request.query.get("games", 0))
-        moves = int(request.query.get("moves", 0))
+        try:
+            games = int(request.query.get("games", 0))
+            moves = int(request.query.get("moves", 0))
+        except ValueError:
+            raise web.HTTPBadRequest(reason="games and moves must be integers")
         data = await asyncio.to_thread(self._read_sync, games, moves)
         return web.json_response(data)
 
@@ -465,9 +470,48 @@ class Server:
             conn.close()
 
     async def _h_db(self, request):
+        """Stream a consistent snapshot of the DB.
+
+        A snapshot is a full copy, so it is unlinked the moment it is open: the fd keeps
+        the bytes readable while the download runs, and nothing is left behind even if
+        the server dies mid-transfer. (FileResponse can't do this -- it stats the path
+        during prepare, after the handler returns.) Reads happen off the event loop so a
+        multi-GB download can't stall the tournament's round deadlines."""
         dest = os.path.join(self.snapshot_dir, f"snapshot-{new_uuid()}.db")
         await self._write(lambda db: db.snapshot(dest))
-        return web.FileResponse(dest, headers={"Content-Disposition": "attachment; filename=battleship.db"})
+        handle = open(dest, "rb")
+        try:
+            with contextlib.suppress(OSError):
+                os.remove(dest)
+            resp = web.StreamResponse(headers={
+                "Content-Disposition": "attachment; filename=battleship.db",
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(os.fstat(handle.fileno()).st_size),
+            })
+            await resp.prepare(request)
+            while True:
+                chunk = await asyncio.to_thread(handle.read, 1 << 20)
+                if not chunk:
+                    break
+                await resp.write(chunk)
+            await resp.write_eof()
+            return resp
+        finally:
+            handle.close()
+
+    def _clear_snapshots(self):
+        """Drop snapshots orphaned by an earlier crash or kill. Only ever deletes inside
+        the snapshots dir, and never the live DB itself -- this runs at startup against a
+        production database, so it refuses to touch anything it did not create."""
+        live = os.path.realpath(self.db.path)
+        for name in os.listdir(self.snapshot_dir):
+            if not (name.startswith("snapshot-") and name.endswith(".db")):
+                continue
+            path = os.path.join(self.snapshot_dir, name)
+            if os.path.realpath(path) == live:
+                continue
+            with contextlib.suppress(OSError):
+                os.remove(path)
 
     # -- lifecycle --------------------------------------------------------------
 

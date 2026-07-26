@@ -41,14 +41,24 @@ def apply_payload(mirror, payload):
 
 
 def sync_once(mirror, base_url, timeout=30):
-    """Pull everything newer than the mirror's cursors. Returns rows applied."""
-    games = _cursor(mirror.conn, "games")
-    moves = _cursor(mirror.conn, "moves")
-    url = f"{base_url}/sync?games={games}&moves={moves}"
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        payload = json.load(resp)
-    apply_payload(mirror, payload)
-    return {"games": len(payload.get("games", [])), "moves": len(payload.get("moves", []))}
+    """Pull everything newer than the mirror's cursors, a page at a time, until the
+    server reports no more. Returns rows applied. Paging is what lets a fresh mirror
+    catch up on a multi-million-row moves table without the server buffering it all."""
+    applied = {"games": 0, "moves": 0}
+    while True:
+        games = _cursor(mirror.conn, "games")
+        moves = _cursor(mirror.conn, "moves")
+        url = f"{base_url}/sync?games={games}&moves={moves}"
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            payload = json.load(resp)
+        apply_payload(mirror, payload)
+        applied["games"] += len(payload.get("games", []))
+        applied["moves"] += len(payload.get("moves", []))
+        if not payload.get("more"):
+            return applied
+        # A page that advanced neither cursor would loop forever.
+        if _cursor(mirror.conn, "games") == games and _cursor(mirror.conn, "moves") == moves:
+            return applied
 
 
 def base_url(server):
