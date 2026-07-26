@@ -262,6 +262,55 @@ def test_heatmap_counts_own_ships_and_own_shots(tmp_path):
     assert scoring.heatmap(d.conn, p1[0], games=1)["games"] == 1
 
 
+def test_h2h_score_counts_pairs_out_solved(tmp_path):
+    d = Database(tmp_path / "s.db")
+    fast, mid, slow, gone = (reg(d, "fast"), reg(d, "mid"), reg(d, "slow"), reg(d, "gone"))
+    t = db.new_uuid()
+    d.start_tourney(t, {}, 1.0)
+    d.record_games([
+        # fast out-solves mid; seats swap between the two games of the pair.
+        game(t, fast, mid, winner="a", ao="win", bo="loss", asr=20, bsr=40),
+        game(t, mid, fast, winner="b", ao="loss", bo="win", asr=40, bsr=20),
+        # fast out-solves slow, and mid out-solves slow.
+        game(t, fast, slow, winner="a", ao="win", bo="loss", asr=22, bsr=60),
+        game(t, mid, slow, winner="a", ao="win", bo="loss", asr=41, bsr=61),
+        # slow beats a bot that is no longer a contender — must not count for it.
+        game(t, slow, gone, winner="a", ao="win", bo="loss", asr=30, bsr=90),
+        # an unsolved pair: neither side has a time, so it goes unjudged.
+        game(t, fast, gone, winner=None, ao="forfeit", bo="forfeit", asr=None, bsr=None,
+             end="both_forfeit"),
+    ])
+    field = [fast[0], mid[0], slow[0]]
+    h = scoring.h2h_scores(d.conn, field)
+
+    assert h[fast[0]]["score"] == 2 and h[fast[0]]["pairs"] == 2      # beats mid and slow
+    assert set(h[fast[0]]["beats"]) == {mid[0], slow[0]}
+    assert h[mid[0]]["score"] == 1 and h[mid[0]]["pairs"] == 2        # loses to fast
+    assert h[slow[0]]["score"] == 0 and h[slow[0]]["pairs"] == 2      # the `gone` pair is
+    assert gone[0] not in h[slow[0]]["beats"]                         # outside the field
+
+    # A tie on mean solve time gives neither side the pair.
+    d2 = Database(tmp_path / "tie.db")
+    p1, p2 = reg(d2, "p1"), reg(d2, "p2")
+    t2 = db.new_uuid()
+    d2.start_tourney(t2, {}, 1.0)
+    d2.record_games([game(t2, p1, p2, winner="tie", ao="tie", bo="tie", asr=30, bsr=30)])
+    tie = scoring.h2h_scores(d2.conn, [p1[0], p2[0]])
+    assert tie[p1[0]]["score"] == 0 and tie[p2[0]]["score"] == 0
+    assert tie[p1[0]]["pairs"] == 1
+
+    # The window is global and takes the most recent games: with room for one game only,
+    # a single pair is judged.
+    narrow = scoring.h2h_scores(d.conn, field, window=1)
+    assert sum(v["pairs"] for v in narrow.values()) <= 2
+
+    # The board carries the score through.
+    board = {b["bot_uuid"]: b for b in scoring.rankings(d.conn, window=None, idle_sec=0)}
+    assert board[fast[0]]["h2h_score"] == 2 and board[fast[0]]["h2h_pairs"] == 2
+    # `gone` is on the board here too (idle filter off), so slow's win over it now counts.
+    assert board[slow[0]]["h2h_score"] == 1
+
+
 def test_pairings_merge(tmp_path):
     d, ids = seeded(tmp_path)
     pairs = scoring.pairings(d.conn)
