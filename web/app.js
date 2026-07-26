@@ -134,7 +134,7 @@ function openBot(uuid) {
 function renderRankings(rows) {
   paint(el("rankings"), `
     <thead><tr><th>#</th><th class="l">bot</th><th class="l">player</th><th>games</th>
-      <th>win%</th><th>solver↓</th><th>layout↑</th><th>combined</th><th></th></tr></thead>
+      <th class="sorted">win% ↓</th><th>solver↓</th><th>layout↑</th><th>combined</th><th></th></tr></thead>
     <tbody>${rows.map((r) => `
       <tr class="clickable ${r.active ? "" : "inactive"}" onclick="openBot('${r.bot_uuid}')">
         <td>${r.rank}</td><td class="l">${esc(r.name)}</td><td class="l">${esc(r.player)}</td>

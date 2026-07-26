@@ -41,6 +41,7 @@ table { width: 100%; border-collapse: collapse; }
 th, td { padding: .5rem .6rem; text-align: right; border-bottom: 1px solid var(--line); }
 th:first-child, td:first-child, .l { text-align: left; }
 th { color: var(--muted); font-weight: 600; font-size: .82rem; text-transform: uppercase; letter-spacing: .03em; }
+th.sorted { color: var(--ink); }   /* the column the board is ranked on */
 tbody tr:hover { background: var(--panel-2); }
 tr.clickable { cursor: pointer; }
 tr.inactive td { color: var(--muted); }

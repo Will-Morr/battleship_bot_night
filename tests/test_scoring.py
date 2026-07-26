@@ -119,7 +119,7 @@ def test_rankings_metrics(tmp_path):
     assert p1["win_rate"] == 1.0
     assert p1["solver_avg"] == 40.0        # (30 + 50) / 2
     assert p1["layout_avg"] == 40.0        # opponent solved p1 only in g1, at 40
-    assert p1["rank"] == 1                  # best combined
+    assert p1["rank"] == 1                  # highest win rate
 
     p2 = board[ids["p2"]]
     assert p2["win_rate"] == 0.25          # 0 wins, 1 tie, 2 games
@@ -128,6 +128,21 @@ def test_rankings_metrics(tmp_path):
     p3 = board[ids["p3"]]
     assert p3["forfeits"] == 1
     assert p3["solver_avg"] == 45.0        # only the tie game; the forfeit is a DNF
+
+
+def test_rankings_order_by_win_rate(tmp_path):
+    # The board ranks on win rate, not the combined score, and comes back in rank order.
+    d, ids = seeded(tmp_path)
+    board = scoring.rankings(d.conn)
+
+    assert [b["rank"] for b in board] == [1, 2, 3]           # returned in rank order
+    rates = [b["win_rate"] for b in board]
+    assert rates == sorted(rates, reverse=True), rates
+    assert board[0]["bot_uuid"] == ids["p1"]                 # 1.0
+    assert {b["bot_uuid"] for b in board[1:]} == {ids["p2"], ids["p3"]}
+    assert board[1]["win_rate"] == 0.25 and board[2]["win_rate"] == 0.25
+    # Equal win rates: more games played comes first.
+    assert board[1]["games"] >= board[2]["games"]
 
 
 def test_pairings_merge(tmp_path):
