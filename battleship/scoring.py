@@ -5,6 +5,7 @@ Each game contributes two perspectives (side a and side b); the UNION below flat
 game into one row per participating bot so everything is a simple GROUP BY.
 """
 
+import json
 import math
 import statistics
 
@@ -138,6 +139,94 @@ def bot_detail(conn, bot_uuid):
         "layout_hist": _histogram([r["opp_solver"] for r in rows]),
         "opponents": opponents,
     }
+
+
+def recent_games(conn, bot_uuid, limit=10):
+    """The bot's most recently finished games, newest first, from its own perspective.
+    Summary only — the boards and shot order come from `game_replay`."""
+    rows = conn.execute("""
+        SELECT uuid, a_bot_uuid, b_bot_uuid, winner, a_outcome, b_outcome,
+               a_solved_round, b_solved_round, end_reason, total_rounds, ended_at
+        FROM games WHERE a_bot_uuid=? OR b_bot_uuid=? ORDER BY seq DESC LIMIT ?
+    """, (bot_uuid, bot_uuid, limit)).fetchall()
+    meta = {r["uuid"]: dict(r) for r in conn.execute("SELECT uuid, player, name FROM bots")}
+
+    out = []
+    for r in rows:
+        me, opp = ("a", "b") if r["a_bot_uuid"] == bot_uuid else ("b", "a")
+        om = meta.get(r[f"{opp}_bot_uuid"], {})
+        out.append({
+            "game_uuid": r["uuid"],
+            "opponent": {"bot_uuid": r[f"{opp}_bot_uuid"],
+                         "name": om.get("name", "?"), "player": om.get("player", "?")},
+            "outcome": r[f"{me}_outcome"],
+            "solved_round": r[f"{me}_solved_round"],
+            "opponent_solved_round": r[f"{opp}_solved_round"],
+            "end_reason": r["end_reason"],
+            "total_rounds": r["total_rounds"],
+            "ended_at": r["ended_at"],
+        })
+    return out
+
+
+def game_replay(conn, game_uuid, bot_uuid=None):
+    """One game as two symmetric sides: each side's submitted layout plus the shots it
+    fired, in order. `bot_uuid` (if given and playing) is put on the 'you' side so the
+    single-bot page can render it without knowing which seat the bot took."""
+    g = conn.execute("""
+        SELECT g.*, t.config_json FROM games g
+        JOIN tourneys t ON t.uuid = g.tourney_uuid WHERE g.uuid=?
+    """, (game_uuid,)).fetchone()
+    if g is None:
+        return None
+    config = json.loads(g["config_json"] or "{}")
+    meta = {r["uuid"]: dict(r) for r in conn.execute("SELECT uuid, player, name FROM bots")}
+
+    moves = conn.execute(
+        "SELECT round, side, row, col, result, sunk_ship FROM moves "
+        "WHERE game_uuid=? ORDER BY round, side", (game_uuid,)).fetchall()
+    shots = {"a": [], "b": []}
+    for m in moves:
+        shots[m["side"]].append({"round": m["round"], "row": m["row"], "col": m["col"],
+                                 "result": m["result"], "sunk_ship": m["sunk_ship"]})
+
+    def side(s):
+        bm = meta.get(g[f"{s}_bot_uuid"], {})
+        return {
+            "side": s,
+            "bot_uuid": g[f"{s}_bot_uuid"],
+            "name": bm.get("name", "?"),
+            "player": bm.get("player", "?"),
+            # The layout this bot submitted; NULL/invalid ones are why a game can end
+            # 'illegal' before a shot is fired, so pass the parse failure through as [].
+            "layout": _json_list(g[f"{s}_layout_json"]),
+            "shots": shots[s],          # what this bot fired at the opponent's board
+            "outcome": g[f"{s}_outcome"],
+            "solved_round": g[f"{s}_solved_round"],
+        }
+
+    you, opp = ("a", "b") if bot_uuid is None or g["a_bot_uuid"] == bot_uuid else ("b", "a")
+    return {
+        "game_uuid": game_uuid,
+        "rows": config.get("rows", 10),
+        "cols": config.get("cols", 10),
+        "fleet": config.get("fleet", []),
+        "winner": g["winner"],
+        "end_reason": g["end_reason"],
+        "total_rounds": g["total_rounds"],
+        "ended_at": g["ended_at"],
+        "you": side(you),
+        "opponent": side(opp),
+    }
+
+
+def _json_list(raw):
+    """Parse a stored JSON list, tolerating NULL / 'null' / malformed values."""
+    try:
+        value = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
 
 
 def _sig(z):

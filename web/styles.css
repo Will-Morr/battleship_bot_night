@@ -94,6 +94,36 @@ table.cmp td { border-bottom: 1px solid var(--line); vertical-align: middle; }
 table.cmp td.l { color: var(--muted); text-transform: uppercase; font-size: .78rem; letter-spacing: .03em; }
 .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: .72rem; margin-top: .25rem; }
 
+.toggle { color: var(--muted); font-size: .82rem; cursor: pointer; user-select: none; }
+.toggle input { accent-color: var(--accent); vertical-align: -2px; margin-right: .2rem; }
+
+/* recent-games replay: one mini board per side */
+.replay { background: var(--panel-2); margin: .75rem 0 0; }
+/* No grid gap: the ship overlay maps cell (r,c) to (c+.5, r+.5), so the cells must sit
+   on an exact pitch. The 1px inset line below draws the separators instead. */
+.mini { position: relative; display: grid; grid-template-columns: repeat(var(--cols, 10), 1fr);
+  margin-top: .4rem; }
+.mini .c {
+  aspect-ratio: 1; background: var(--bg); box-shadow: inset 0 0 0 1px var(--panel-2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: .6rem; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.mini .c.ship { background: #1a2440; color: var(--ink); }
+.mini .c.hit { background: #b4472f; color: #fff; }
+.mini .c.sunk { background: #7d2718; color: #fff; font-weight: 700; }
+/* ship hulls: a circle per tile, joined along the ship's axis */
+.mini .ships { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.ships line, .ships circle { fill: none; stroke: rgba(232, 236, 245, .9);
+  stroke-width: 1.4; vector-effect: non-scaling-stroke; stroke-linecap: round; }
+.legend { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;
+  margin-top: .75rem; font-size: .78rem; color: var(--muted); }
+.legend .sw { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px;
+  margin-right: .3rem; vertical-align: -1px; background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--panel-2); }
+.legend .sw.hit { background: #b4472f; }
+.legend .sw.sunk { background: #7d2718; }
+.legend .swship { width: 2.1rem; height: .7rem; margin-right: .3rem; vertical-align: -1px; }
+
 /* Projector board */
 body.projector { background: radial-gradient(1200px 600px at 50% -10%, #16203a, var(--bg)); }
 .board { max-width: 1400px; margin: 0 auto; padding: 1.5rem 2rem; }

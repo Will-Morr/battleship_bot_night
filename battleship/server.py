@@ -343,6 +343,8 @@ class Server:
             web.get("/api/rankings", self._h_rankings),
             web.get("/api/bots", self._h_bots),
             web.get("/api/bot/{uuid}", self._h_bot),
+            web.get("/api/bot/{uuid}/games", self._h_bot_games),
+            web.get("/api/game/{uuid}", self._h_game),
             web.get("/api/compare", self._h_compare),
             web.get("/api/pairings", self._h_pairings),
             web.get("/api/tourneys", self._h_tourneys),
@@ -387,6 +389,24 @@ class Server:
     async def _h_bot(self, request):
         uuid = request.match_info["uuid"]
         return web.json_response(await self._read(lambda c: scoring.bot_detail(c, uuid)))
+
+    async def _h_bot_games(self, request):
+        uuid = request.match_info["uuid"]
+        try:
+            limit = max(1, min(50, int(request.query.get("limit", 10))))
+        except ValueError:
+            return web.json_response({"error": "limit must be an integer"}, status=400)
+        return web.json_response(
+            await self._read(lambda c: scoring.recent_games(c, uuid, limit)))
+
+    async def _h_game(self, request):
+        uuid = request.match_info["uuid"]
+        # ?bot= decides which seat is rendered as "you"; it is optional.
+        bot = request.query.get("bot")
+        replay = await self._read(lambda c: scoring.game_replay(c, uuid, bot))
+        if replay is None:
+            return web.json_response({"error": "unknown game"}, status=404)
+        return web.json_response(replay)
 
     async def _h_compare(self, request):
         a, b = request.query.get("a"), request.query.get("b")

@@ -38,6 +38,50 @@ def seeded(tmp_path):
     return d, {"p1": p1[0], "p2": p2[0], "p3": p3[0]}
 
 
+def test_recent_games_and_replay(tmp_path):
+    d = Database(tmp_path / "s.db")
+    p1, p2 = reg(d, "p1"), reg(d, "p2")
+    t = db.new_uuid()
+    d.start_tourney(t, {"rows": 10, "cols": 10,
+                        "fleet": [{"name": "destroyer", "size": 2}]}, 1.0)
+    g1 = game(t, p1, p2, winner="a", ao="win", bo="loss", asr=3, bsr=4)
+    g2 = game(t, p2, p1, winner="a", ao="win", bo="loss", asr=5, bsr=6)
+    g2["a_layout"] = [{"name": "destroyer", "row": 0, "col": 0, "orientation": "H"}]
+    g2["b_layout"] = [{"name": "destroyer", "row": 9, "col": 8, "orientation": "H"}]
+    g2["moves"] = [
+        {"round": 1, "side": "a", "row": 9, "col": 8, "result": "hit",
+         "sunk_ship": None, "response_ms": 1.0},
+        {"round": 1, "side": "b", "row": 5, "col": 5, "result": "miss",
+         "sunk_ship": None, "response_ms": 1.0},
+        {"round": 2, "side": "a", "row": 9, "col": 9, "result": "sunk",
+         "sunk_ship": "destroyer", "response_ms": 1.0},
+    ]
+    d.record_games([g1, g2])
+
+    recent = scoring.recent_games(d.conn, p1[0])
+    assert [r["game_uuid"] for r in recent] == [g2["uuid"], g1["uuid"]]   # newest first
+    assert recent[0]["opponent"]["bot_uuid"] == p2[0]      # p1 sat on side b in g2
+    assert recent[0]["outcome"] == "loss"
+    assert recent[0]["solved_round"] == 6 and recent[0]["opponent_solved_round"] == 5
+
+    # `you` follows the requested bot into whichever seat it took.
+    r = scoring.game_replay(d.conn, g2["uuid"], p1[0])
+    assert r["you"]["side"] == "b" and r["you"]["bot_uuid"] == p1[0]
+    assert r["opponent"]["side"] == "a"
+    assert r["you"]["layout"][0]["row"] == 9               # b's own ships
+    # `shots` are what that side fired, in order, so a board is drawn from its owner's
+    # layout plus the other side's shots.
+    assert [(s["row"], s["col"]) for s in r["opponent"]["shots"]] == [(9, 8), (9, 9)]
+    assert [s["result"] for s in r["opponent"]["shots"]] == ["hit", "sunk"]
+    assert [(s["row"], s["col"]) for s in r["you"]["shots"]] == [(5, 5)]
+    assert r["rows"] == 10 and r["cols"] == 10 and r["fleet"][0]["size"] == 2
+
+    # Unknown game, and a game with no layout, degrade instead of raising.
+    assert scoring.game_replay(d.conn, "nope") is None
+    plain = scoring.game_replay(d.conn, g1["uuid"])
+    assert plain["you"]["side"] == "a" and plain["you"]["layout"] == []
+
+
 def test_both_forfeit_game_scores_without_credit(tmp_path):
     # A game both sides forfeited stores winner NULL, and `winner='a'` is NULL (not 0)
     # in SQL — leaving `win`/`tie` as None and blowing up per-bot detail (a 500 on
